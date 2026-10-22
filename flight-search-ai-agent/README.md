@@ -63,7 +63,7 @@ END
 | `memory.py` | Session short-term memory (Unit III) |
 | `workflow.py` | LangGraph `StateGraph` and compiled graphs |
 | `tools.py` | Flight Search Tool and Email Tool |
-| `data.py` | Mock flight inventory |
+| `data.py` | Route-aware mock inventory (47 cities, 30+ airlines, 14–20 flights per route, stable between runs) |
 | `tests/test_demo.py` | Runnable demo test script |
 | `requirements.txt` | Python dependencies |
 | `.env.example` | Optional OpenAI / SMTP settings |

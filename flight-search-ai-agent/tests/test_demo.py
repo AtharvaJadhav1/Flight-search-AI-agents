@@ -179,6 +179,20 @@ def test_helpers() -> None:
     assert is_valid_email("a@b.co") and not is_valid_email("nope")
 
 
+def test_mock_data_is_route_aware() -> None:
+    from data import get_mock_flights
+
+    goa = get_mock_flights("Pune", "Goa")
+    london = get_mock_flights("Delhi", "London")
+    assert 10 <= len(goa) <= 20 and 10 <= len(london) <= 20
+    assert get_mock_flights("Pune", "Goa") == goa  # stable between runs
+    assert len({f["flight_number"] for f in goa}) == len(goa)
+    assert min(f["price"] for f in goa) < 8000 < min(f["price"] for f in london)
+    assert not {f["airline"] for f in goa} & {"Emirates", "Singapore Airlines"}
+    assert all("baggage" in f and "refundable" in f for f in goa + london)
+    assert get_mock_flights("Pune", "Narnia")  # unknown cities still work
+
+
 def run_all() -> None:
     test_parser_demo_mode()
     test_parser_budget_formats()
@@ -195,6 +209,7 @@ def run_all() -> None:
     test_web_style_approval()
     test_email_override_and_delivery()
     test_helpers()
+    test_mock_data_is_route_aware()
     print("All demo tests passed.")
 
 

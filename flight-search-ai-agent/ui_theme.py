@@ -289,6 +289,10 @@ def render_flight_cards(selected: List[dict], budget: int = 0) -> None:
         stops = "Nonstop" if f["stops"] == 0 else f'{f["stops"]} stop{"s" if f["stops"] != 1 else ""}'
         tags.append(f'<span class="tag">{stops}</span>')
         tags.append(f'<span class="tag">{escape(f["duration"])}</span>')
+        if f.get("baggage"):
+            tags.append(f'<span class="tag">{escape(f["baggage"])} bag</span>')
+        if f.get("refundable"):
+            tags.append('<span class="tag good">Refundable</span>')
         save = f'<div class="fc-save">{format_inr(budget - f["price"])} under budget</div>' if budget else ""
         cards.append(
             f"""
@@ -325,12 +329,12 @@ def render_all_flights_table(result: Dict[str, Any]) -> None:
         rows.append(
             f'<tr class="{cls}"><td>{escape(f["airline"])}</td><td>{escape(f["flight_number"])}</td>'
             f'<td>{escape(f["departure"])} → {escape(f["arrival"])}</td><td>{escape(f["duration"])}</td>'
-            f'<td>{stops}</td><td class="num">{format_inr(f["price"])}</td>'
+            f'<td>{stops}</td><td>{escape(f.get("baggage", "—"))}</td><td class="num">{format_inr(f["price"])}</td>'
             f'<td><span class="tag {tag}">{status}</span></td></tr>'
         )
     st.markdown(
         '<div class="table-wrap"><table class="ft"><thead><tr><th>Airline</th><th>Flight</th><th>Times</th>'
-        '<th>Duration</th><th>Stops</th><th style="text-align:right">Price</th><th>Status</th></tr></thead>'
+        '<th>Duration</th><th>Stops</th><th>Bag</th><th style="text-align:right">Price</th><th>Status</th></tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table></div>',
         unsafe_allow_html=True,
     )
