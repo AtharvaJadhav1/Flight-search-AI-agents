@@ -275,8 +275,8 @@ def parse_request(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def apply_memory(state: Dict[str, Any]) -> Dict[str, Any]:
-    """UNIT 3: merge short-term session memory with parsed request details."""
-    banner("🧠 SHORT-TERM MEMORY (UNIT III)", state)
+    """Merge short-term session memory with parsed request details."""
+    banner("🧠 SESSION MEMORY", state)
     tprint(state, "Checking conversational memory for this session...")
     if is_terminal_ui(state):
         print()
@@ -431,8 +431,8 @@ def analyze_flights(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def human_approval(state: Dict[str, Any]) -> Dict[str, Any]:
-    """UNIT 4: human-in-the-loop before sending or generating the final email."""
-    banner("👤 HUMAN-IN-THE-LOOP APPROVAL (UNIT IV)", state)
+    """Human-in-the-loop before sending or generating the final email."""
+    banner("👤 HUMAN APPROVAL", state)
     selected = state.get("selected_flights") or []
     ui_mode = state.get("ui_mode") or "terminal"
 
