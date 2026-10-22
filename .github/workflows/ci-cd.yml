@@ -1,9 +1,5 @@
 # CI: run tests on every push/PR to main.
 # CD: after tests pass on push to main, trigger Render deploy hook (if configured).
-#
-# Render setup (choose one):
-# A) Auto-Deploy ON in Render dashboard → push deploys; this workflow still runs tests.
-# B) Auto-Deploy OFF → add GitHub secret RENDER_DEPLOY_HOOK_URL (Render → Service → Deploy Hook).
 
 name: CI/CD
 
@@ -17,10 +13,6 @@ concurrency:
   group: ci-cd-${{ github.ref }}
   cancel-in-progress: true
 
-defaults:
-  run:
-    working-directory: flight-search-ai-agent
-
 jobs:
   test:
     name: Test
@@ -29,17 +21,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve app directory
+        id: app
+        shell: bash
+        run: |
+          if [ -f flight-search-ai-agent/requirements.txt ]; then
+            echo "dir=flight-search-ai-agent" >> "$GITHUB_OUTPUT"
+          elif [ -f requirements.txt ]; then
+            echo "dir=." >> "$GITHUB_OUTPUT"
+          else
+            echo "Could not find requirements.txt"
+            exit 1
+          fi
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: flight-search-ai-agent/requirements.txt
+          cache-dependency-path: ${{ steps.app.outputs.dir }}/requirements.txt
 
       - name: Install dependencies
+        working-directory: ${{ steps.app.outputs.dir }}
         run: pip install -r requirements.txt
 
       - name: Run demo tests
+        working-directory: ${{ steps.app.outputs.dir }}
         env:
           OPENAI_API_KEY: ""
         run: python tests/test_demo.py
@@ -49,8 +56,13 @@ jobs:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # Deploy hook only needs curl — do not use flight-search-ai-agent as cwd (may not exist on GitHub).
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
     steps:
       - name: Trigger Render deploy hook
+        shell: bash
         env:
           DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
         run: |
