@@ -289,6 +289,8 @@ def render_refine_prompt() -> None:
     mem = memory_for_streamlit()
     if not mem.has_search_context():
         return
+    if st.session_state.pop("clear_refine_input", False):
+        st.session_state.refine_text = ""
     with st.container(border=True):
         st.markdown("**2. Refine results** (uses session memory)")
         st.caption(
@@ -316,7 +318,7 @@ def render_refine_prompt() -> None:
         st.session_state.form_error = ""
         with st.spinner("Refining…"):
             run_search(text, email, is_refinement=True)
-        st.session_state.refine_text = ""
+        st.session_state.clear_refine_input = True
         st.rerun()
 
 
