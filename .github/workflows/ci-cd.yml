@@ -1,0 +1,63 @@
+# CI: run tests on every push/PR to main.
+# CD: after tests pass on push to main, trigger Render deploy hook (if configured).
+#
+# Render setup (choose one):
+# A) Auto-Deploy ON in Render dashboard → push deploys; this workflow still runs tests.
+# B) Auto-Deploy OFF → add GitHub secret RENDER_DEPLOY_HOOK_URL (Render → Service → Deploy Hook).
+
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: flight-search-ai-agent
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: flight-search-ai-agent/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run demo tests
+        env:
+          OPENAI_API_KEY: ""
+        run: python tests/test_demo.py
+
+  deploy:
+    name: Deploy to Render
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy hook
+        env:
+          DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$DEPLOY_HOOK" ]; then
+            echo "RENDER_DEPLOY_HOOK_URL is not set."
+            echo "Skipping hook. If Auto-Deploy is enabled on Render, your push still deploys from GitHub."
+            exit 0
+          fi
+          curl -fsS -X POST "$DEPLOY_HOOK"
+          echo "Render deploy triggered."

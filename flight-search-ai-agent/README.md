@@ -128,6 +128,44 @@ python tests/test_demo.py
 
 Covers normal search, memory follow-up, rejection (no email), and demo parsing without an API key.
 
+## Deploy on Render (CI/CD)
+
+This repo includes **GitHub Actions** (`.github/workflows/ci-cd.yml`) and **`render.yaml`** at the repository root.
+
+### One-time Render setup
+
+1. Push this project to GitHub (`main` branch).
+2. In [Render](https://render.com): **New → Web Service** → connect `Flight-search-AI-agents` (or your repo).
+3. Set **Root Directory** to `flight-search-ai-agent`.
+4. **Build command:** `pip install -r requirements.txt`
+5. **Start command:**
+   ```bash
+   streamlit run app.py --server.port=$PORT --server.address=0.0.0.0 --server.headless=true --browser.gatherUsageStats=false
+   ```
+6. **Environment:** add optional `OPENAI_API_KEY`, `SMTP_*` in Render → Environment (never commit `.env`).
+7. Under **Settings → Build & Deploy**, turn **Auto-Deploy** ON for branch `main`.
+
+### CI/CD on every push
+
+| Step | What happens |
+| --- | --- |
+| Push to `main` | GitHub Actions runs `python tests/test_demo.py` |
+| Tests pass | Optional: `RENDER_DEPLOY_HOOK_URL` triggers deploy (see below) |
+| Auto-Deploy ON | Render rebuilds and redeploys from the same push |
+
+**Recommended for jury:** keep **Auto-Deploy ON** on Render so every push to `main` deploys automatically after GitHub receives the commit. Actions still guard quality with tests.
+
+**Optional gated deploy:** turn **Auto-Deploy OFF** on Render, copy **Deploy Hook** URL, add GitHub repo secret `RENDER_DEPLOY_HOOK_URL` — deploy runs only after tests pass in Actions.
+
+### Local check before push
+
+```bash
+cd flight-search-ai-agent
+pip install -r requirements.txt
+python tests/test_demo.py
+git add -A && git commit -m "your message" && git push origin main
+```
+
 ## Future Improvements
 
 - Real flight API integration

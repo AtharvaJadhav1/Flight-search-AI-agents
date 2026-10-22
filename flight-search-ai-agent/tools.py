@@ -19,7 +19,7 @@ def format_inr(amount: int) -> str:
     return f"₹{amount:,}"
 
 
-def flight_search_tool(source: str, destination: str) -> List[Dict[str, Any]]:
+def flight_search_tool(source: str, destination: str, *, quiet: bool = False) -> List[Dict[str, Any]]:
     """
     Flight Search Tool.
 
@@ -27,36 +27,39 @@ def flight_search_tool(source: str, destination: str) -> List[Dict[str, Any]]:
     Later you can replace the body of this function with a real API call
     (Amadeus, Aviationstack, etc.) and keep the same return format.
     """
-    print()
-    print("🔧 TOOL CALL: FLIGHT SEARCH TOOL")
-    print()
-    print("Searching flights...")
-    print()
-    print(f"Source: {source}")
-    print(f"Destination: {destination}")
-    print()
+    if not quiet:
+        print()
+        print("🔧 TOOL CALL: FLIGHT SEARCH TOOL")
+        print()
+        print("Searching flights...")
+        print()
+        print(f"Source: {source}")
+        print(f"Destination: {destination}")
+        print()
 
     flights = get_mock_flights(source, destination)
 
-    print("✓ Flight data retrieved successfully.")
-    print(f"✓ Total flights found: {len(flights)}")
-    print()
+    if not quiet:
+        print("✓ Flight data retrieved successfully.")
+        print(f"✓ Total flights found: {len(flights)}")
+        print()
     return flights
 
 
-def send_email_tool(to_address: str, subject: str, body: str) -> str:
+def send_email_tool(to_address: str, subject: str, body: str, *, quiet: bool = False) -> str:
     """
     Email Tool.
 
     - If SMTP_EMAIL and SMTP_PASSWORD are set, try to send a real email.
     - Otherwise, simulate sending (Demo Mode). This is what the jury demo uses.
     """
-    print()
-    print("📧 EMAIL TOOL CALL")
-    print()
-    print("Generating email...")
-    print()
-    print("✓ Email generated successfully.")
+    if not quiet:
+        print()
+        print("📧 EMAIL TOOL CALL")
+        print()
+        print("Generating email...")
+        print()
+        print("✓ Email generated successfully.")
 
     smtp_user = os.getenv("SMTP_EMAIL", "").strip()
     smtp_password = os.getenv("SMTP_PASSWORD", "").strip()
@@ -75,13 +78,16 @@ def send_email_tool(to_address: str, subject: str, body: str) -> str:
                 server.login(smtp_user, smtp_password)
                 server.sendmail(smtp_user, [to_address], message.as_string())
 
-            print("✓ Email sent successfully (SMTP).")
+            if not quiet:
+                print("✓ Email sent successfully (SMTP).")
             return "sent"
         except Exception as error:
             # Never crash the demo if SMTP fails.
-            print(f"⚠ Real email failed ({error}). Falling back to Demo Mode.")
-            print("✓ Email sent successfully (DEMO MODE).")
+            if not quiet:
+                print(f"⚠ Real email failed ({error}). Falling back to Demo Mode.")
+                print("✓ Email sent successfully (DEMO MODE).")
             return "demo"
 
-    print("✓ Email sent successfully (DEMO MODE).")
+    if not quiet:
+        print("✓ Email sent successfully (DEMO MODE).")
     return "demo"

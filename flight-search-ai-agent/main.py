@@ -13,36 +13,29 @@ configure_unicode_output()
 
 
 def print_welcome() -> None:
-    print("=" * 49)
-    print("        ✈️ FLIGHT SEARCH AI AGENT")
-    print("          AGENTIC AI PROTOTYPE")
-    print("=" * 49)
+    bar = "─" * 52
     print()
-    print("Welcome!")
+    print(bar)
+    print("  ✈️  FLIGHT SEARCH AI AGENT")
+    print("      Agentic AI · Terminal")
+    print(bar)
     print()
-    if is_demo_mode():
-        print("Mode: DEMO MODE (no OpenAI API key required)")
-    else:
-        print("Mode: LLM + tools (OpenAI API key detected)")
+    mode = "DEMO MODE (rule-based parsing)" if is_demo_mode() else "LLM + tools (OpenAI key)"
+    print(f"  Mode     {mode}")
+    print(f"  Web UI   streamlit run app.py")
     print()
-    print("Tip: After a search, try a follow-up like:")
-    print('  "Show me only the cheapest one."')
+    print("  Example request:")
+    print("  Find cheapest Pune → Singapore under ₹30,000, top 3, email me.")
     print()
-    print("Type 'quit' or 'exit' to leave.")
-    print()
-    print("Please enter your flight search request.")
-    print()
-    print("Example:")
-    print()
-    print("Find me the cheapest flight from Pune to Singapore")
-    print("under ₹30,000 and email me the top 3 options.")
+    print("  Follow-up: \"Show me only the cheapest one.\"")
+    print("  Exit: quit / exit")
+    print(bar)
     print()
 
 
 def ask_email() -> str:
-    print("Enter your email address:")
-    print(">")
-    email = input().strip()
+    print("Email")
+    email = input("  › ").strip()
     if not email:
         email = "user@example.com"
         print("No email entered. Using user@example.com for the demo.")
@@ -53,9 +46,8 @@ def ask_email() -> str:
 
 
 def ask_request() -> str:
-    print("Your Request:")
-    print(">")
-    request = input().strip()
+    print("Your request")
+    request = input("  › ").strip()
     print()
     return request
 
@@ -158,9 +150,8 @@ def main() -> None:
         result = run_one_search(user_request, email_address, memory)
         print_result_footer(result)
 
-        print("Search another request? (y/n)")
-        print(">")
-        again = input().strip().lower()
+        print("Search again? (y/n)")
+        again = input("  › ").strip().lower()
         if again not in {"y", "yes"}:
             print("Goodbye.")
             break

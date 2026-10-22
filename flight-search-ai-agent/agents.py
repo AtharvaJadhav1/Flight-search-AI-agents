@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from data import KNOWN_CITIES
 from memory import ConversationMemory, apply_memory_to_state
 from tools import flight_search_tool, format_inr, send_email_tool
+from ui_common import is_terminal_ui
 
 
 def configure_unicode_output() -> None:
@@ -46,12 +47,20 @@ def is_demo_mode() -> bool:
     return not os.getenv("OPENAI_API_KEY", "").strip()
 
 
-def banner(title: str) -> None:
+def banner(title: str, state: Optional[Dict[str, Any]] = None) -> None:
+    if not is_terminal_ui(state):
+        return
     print()
     print("=" * 49)
     print(title)
     print("=" * 49)
     print()
+
+
+def tprint(state: Dict[str, Any], *parts: object, sep: str = " ") -> None:
+    """Print only in terminal UI mode."""
+    if is_terminal_ui(state):
+        print(sep.join(str(p) for p in parts))
 
 
 def _clean_city(name: str) -> str:
@@ -208,11 +217,12 @@ def extract_travel_details(user_request: str) -> Dict[str, Any]:
 
 def parse_request(state: Dict[str, Any]) -> Dict[str, Any]:
     """AGENT 1: understand the natural-language request."""
-    banner("🤖 AGENT 1: REQUEST PARSER")
-    print("Understanding your request...")
-    print()
+    banner("🤖 AGENT 1: REQUEST PARSER", state)
+    tprint(state, "Understanding your request...")
+    if is_terminal_ui(state):
+        print()
 
-    if is_demo_mode():
+    if is_demo_mode() and is_terminal_ui(state):
         print("⚙ No OpenAI API key found. Using DEMO MODE (rule-based parsing).")
         print()
 
@@ -232,9 +242,13 @@ def parse_request(state: Dict[str, Any]) -> Dict[str, Any]:
         missing.append("valid budget")
 
     if missing:
-        print("❌ I could not extract:", ", ".join(missing) + ".")
-        print("Please include source, destination, and a numeric budget.")
-        print("Example: Find me the cheapest flight from Pune to Singapore under ₹30,000 and email me the top 3 options.")
+        if is_terminal_ui(state):
+            print("❌ I could not extract:", ", ".join(missing) + ".")
+            print("Please include source, destination, and a numeric budget.")
+            print(
+                "Example: Find me the cheapest flight from Pune to Singapore "
+                "under ₹30,000 and email me the top 3 options."
+            )
         return {
             "source": source,
             "destination": destination,
@@ -244,10 +258,11 @@ def parse_request(state: Dict[str, Any]) -> Dict[str, Any]:
             "status": "missing_info",
         }
 
-    print(f"✓ Source: {source}")
-    print(f"✓ Destination: {destination}")
-    print(f"✓ Budget: {format_inr(budget)}")
-    print(f"✓ Requested Results: Top {top_results}")
+    if is_terminal_ui(state):
+        print(f"✓ Source: {source}")
+        print(f"✓ Destination: {destination}")
+        print(f"✓ Budget: {format_inr(budget)}")
+        print(f"✓ Requested Results: Top {top_results}")
 
     return {
         "source": source,
@@ -261,9 +276,10 @@ def parse_request(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def apply_memory(state: Dict[str, Any]) -> Dict[str, Any]:
     """UNIT 3: merge short-term session memory with parsed request details."""
-    banner("🧠 SHORT-TERM MEMORY (UNIT III)")
-    print("Checking conversational memory for this session...")
-    print()
+    banner("🧠 SHORT-TERM MEMORY (UNIT III)", state)
+    tprint(state, "Checking conversational memory for this session...")
+    if is_terminal_ui(state):
+        print()
 
     snapshot = state.get("memory_snapshot") or {}
     memory = ConversationMemory()
@@ -280,15 +296,16 @@ def apply_memory(state: Dict[str, Any]) -> Dict[str, Any]:
     note = merged.get("memory_note") or ""
 
     if merged.get("status") == "parsed":
-        print("✓ Memory applied successfully.")
-        if note:
-            print(f"✓ {note}")
-        print()
-        print(f"✓ Source: {merged['source']}")
-        print(f"✓ Destination: {merged['destination']}")
-        print(f"✓ Budget: {format_inr(merged['budget'])}")
-        print(f"✓ Results to return: Top {merged['top_results']}")
-    else:
+        if is_terminal_ui(state):
+            print("✓ Memory applied successfully.")
+            if note:
+                print(f"✓ {note}")
+            print()
+            print(f"✓ Source: {merged['source']}")
+            print(f"✓ Destination: {merged['destination']}")
+            print(f"✓ Budget: {format_inr(merged['budget'])}")
+            print(f"✓ Results to return: Top {merged['top_results']}")
+    elif is_terminal_ui(state):
         print("❌ Still missing information after memory merge.")
         if note:
             print(f"   {note}")
@@ -298,9 +315,10 @@ def apply_memory(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def create_plan(state: Dict[str, Any]) -> Dict[str, Any]:
     """AGENT 2: create a multi-step execution plan (this is planning)."""
-    banner("🧠 AGENT 2: PLANNING AGENT")
-    print("Creating execution plan...")
-    print()
+    banner("🧠 AGENT 2: PLANNING AGENT", state)
+    tprint(state, "Creating execution plan...")
+    if is_terminal_ui(state):
+        print()
 
     source = state.get("source")
     destination = state.get("destination")
@@ -318,32 +336,36 @@ def create_plan(state: Dict[str, Any]) -> Dict[str, Any]:
         "Send or simulate sending the email.",
     ]
 
-    print("I will perform the following tasks:")
-    print()
-    for index, step in enumerate(plan, start=1):
-        print(f"{index}. {step}")
+    if is_terminal_ui(state):
+        print("I will perform the following tasks:")
+        print()
+        for index, step in enumerate(plan, start=1):
+            print(f"{index}. {step}")
 
     return {"plan": plan, "status": "planned"}
 
 
 def search_flights(state: Dict[str, Any]) -> Dict[str, Any]:
     """AGENT 3: call the Flight Search Tool (this is tool calling)."""
-    banner("🔧 AGENT 3: FLIGHT SEARCH AGENT")
-    print("Calling Flight Search Tool...")
+    banner("🔧 AGENT 3: FLIGHT SEARCH AGENT", state)
+    tprint(state, "Calling Flight Search Tool...")
 
-    flights = flight_search_tool(state["source"], state["destination"])
+    quiet = not is_terminal_ui(state)
+    flights = flight_search_tool(state["source"], state["destination"], quiet=quiet)
 
-    print("✓ Tool executed successfully.")
-    print(f"✓ Found {len(flights)} flights.")
+    if is_terminal_ui(state):
+        print("✓ Tool executed successfully.")
+        print(f"✓ Found {len(flights)} flights.")
 
     return {"all_flights": flights, "status": "searched"}
 
 
 def analyze_flights(state: Dict[str, Any]) -> Dict[str, Any]:
     """AGENT 4: filter, sort, and choose top flights (this is decision making)."""
-    banner("📊 AGENT 4: FLIGHT ANALYSIS AGENT")
-    print("Analyzing flight data...")
-    print()
+    banner("📊 AGENT 4: FLIGHT ANALYSIS AGENT", state)
+    tprint(state, "Analyzing flight data...")
+    if is_terminal_ui(state):
+        print()
 
     budget = state["budget"]
     top_results = state.get("top_results", 3)
@@ -354,49 +376,52 @@ def analyze_flights(state: Dict[str, Any]) -> Dict[str, Any]:
     sorted_flights = sorted(within_budget, key=lambda flight: flight["price"])
     selected = sorted_flights[:top_results]
 
-    print(f"User Budget: {format_inr(budget)}")
-    print()
-    print(f"Total Flights: {len(all_flights)}")
-    print()
-    print(f"Flights Removed Above Budget: {removed}")
-    print()
-    print(f"Flights Remaining: {len(within_budget)}")
-    print()
+    if is_terminal_ui(state):
+        print(f"User Budget: {format_inr(budget)}")
+        print()
+        print(f"Total Flights: {len(all_flights)}")
+        print()
+        print(f"Flights Removed Above Budget: {removed}")
+        print()
+        print(f"Flights Remaining: {len(within_budget)}")
+        print()
 
     if not selected:
-        print("❌ No flights were found within your budget.")
-        print()
-        print("Try increasing your budget or changing your destination.")
+        if is_terminal_ui(state):
+            print("❌ No flights were found within your budget.")
+            print()
+            print("Try increasing your budget or changing your destination.")
         return {
             "filtered_flights": [],
             "selected_flights": [],
             "status": "no_flights",
         }
 
-    print(f"Selecting Top {len(selected)} Cheapest Flights...")
-    print()
-    print("✓ Removed flights above budget.")
-    print("✓ Sorted flights by lowest price.")
-    print(f"✓ Selected top {len(selected)} cheapest flights.")
-    print()
-    print(f"🏆 TOP {len(selected)} CHEAPEST FLIGHTS")
-    print()
-    print(LINE)
-
-    for index, flight in enumerate(selected, start=1):
-        medal = MEDALS[index - 1] if index <= len(MEDALS) else "✈️"
+    if is_terminal_ui(state):
+        print(f"Selecting Top {len(selected)} Cheapest Flights...")
         print()
-        print(f"{medal} OPTION {index}")
+        print("✓ Removed flights above budget.")
+        print("✓ Sorted flights by lowest price.")
+        print(f"✓ Selected top {len(selected)} cheapest flights.")
         print()
-        print(f"Airline: {flight['airline']}")
-        print(f"Flight Number: {flight['flight_number']}")
-        print(f"Departure: {flight['departure']}")
-        print(f"Arrival: {flight['arrival']}")
-        print(f"Duration: {flight['duration']}")
-        print(f"Stops: {flight['stops']}")
-        print(f"Price: {format_inr(flight['price'])}")
+        print(f"🏆 TOP {len(selected)} CHEAPEST FLIGHTS")
         print()
         print(LINE)
+
+        for index, flight in enumerate(selected, start=1):
+            medal = MEDALS[index - 1] if index <= len(MEDALS) else "✈️"
+            print()
+            print(f"{medal} OPTION {index}")
+            print()
+            print(f"Airline: {flight['airline']}")
+            print(f"Flight Number: {flight['flight_number']}")
+            print(f"Departure: {flight['departure']}")
+            print(f"Arrival: {flight['arrival']}")
+            print(f"Duration: {flight['duration']}")
+            print(f"Stops: {flight['stops']}")
+            print(f"Price: {format_inr(flight['price'])}")
+            print()
+            print(LINE)
 
     return {
         "filtered_flights": sorted_flights,
@@ -407,28 +432,29 @@ def analyze_flights(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def human_approval(state: Dict[str, Any]) -> Dict[str, Any]:
     """UNIT 4: human-in-the-loop before sending or generating the final email."""
-    banner("👤 HUMAN-IN-THE-LOOP APPROVAL (UNIT IV)")
+    banner("👤 HUMAN-IN-THE-LOOP APPROVAL (UNIT IV)", state)
     selected = state.get("selected_flights") or []
     ui_mode = state.get("ui_mode") or "terminal"
 
-    print("🤖 Agent Recommendation")
-    print()
-    print("The agent selected these flights:")
-    print()
-    for index, flight in enumerate(selected, start=1):
-        print(f"{index}. {flight['airline']} — {format_inr(flight['price'])} ({flight['flight_number']})")
-    print()
+    if is_terminal_ui(state):
+        print("🤖 Agent Recommendation")
+        print()
+        print("The agent selected these flights:")
+        print()
+        for index, flight in enumerate(selected, start=1):
+            print(
+                f"{index}. {flight['airline']} — {format_inr(flight['price'])} "
+                f"({flight['flight_number']})"
+            )
+        print()
 
     approved = state.get("human_approved")
 
     if ui_mode == "streamlit":
         if approved is True:
-            print("✓ Human approval received (web UI).")
             return {"status": "approved"}
         if approved is False:
-            print("❌ Recommendation rejected by user (web UI).")
             return {"status": "rejected"}
-        print("⏳ Waiting for human approval in the web interface...")
         return {"status": "awaiting_approval"}
 
     if approved is True:
@@ -454,7 +480,7 @@ def human_approval(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def generate_email(state: Dict[str, Any]) -> Dict[str, Any]:
     """AGENT 5: write the email and send/simulate it (this is the final action)."""
-    banner("📧 AGENT 5: EMAIL AGENT")
+    banner("📧 AGENT 5: EMAIL AGENT", state)
 
     source = state["source"]
     destination = state["destination"]
@@ -483,18 +509,20 @@ def generate_email(state: Dict[str, Any]) -> Dict[str, Any]:
         "Flight Search AI Agent\n"
     )
 
-    print(LINE)
-    print("📧 EMAIL AGENT")
-    print(LINE)
-    print()
-    print(f"To: {to_address}")
-    print()
-    print("Subject:")
-    print(subject)
-    print()
-    print(body)
+    if is_terminal_ui(state):
+        print(LINE)
+        print("📧 EMAIL AGENT")
+        print(LINE)
+        print()
+        print(f"To: {to_address}")
+        print()
+        print("Subject:")
+        print(subject)
+        print()
+        print(body)
 
-    delivery = send_email_tool(to_address, subject, body)
+    quiet = not is_terminal_ui(state)
+    delivery = send_email_tool(to_address, subject, body, quiet=quiet)
 
     return {
         "email_content": f"Subject: {subject}\n\n{body}",
