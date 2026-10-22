@@ -67,7 +67,6 @@ def init_session() -> None:
         "pref_sort": "Cheapest",
         "draft_subject": "",
         "draft_body": "",
-        "refine_text": "",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -289,25 +288,23 @@ def render_refine_prompt() -> None:
     mem = memory_for_streamlit()
     if not mem.has_search_context():
         return
-    if st.session_state.pop("clear_refine_input", False):
-        st.session_state.refine_text = ""
     with st.container(border=True):
         st.markdown("**2. Refine results** (uses session memory)")
         st.caption(
             f"Context: **{mem.source} → {mem.destination}** · {format_inr(mem.budget or 0)}"
         )
-        col_text, col_btn = st.columns([5, 1], vertical_alignment="bottom")
-        with col_text:
-            st.text_input(
-                "Refine",
-                key="refine_text",
-                label_visibility="collapsed",
-                placeholder='e.g. "Give me the cheapest flight" or "Show top 3 fastest"',
-            )
-        with col_btn:
-            refine = st.button("Apply", type="secondary", use_container_width=True)
-    if refine:
-        text = st.session_state.refine_text.strip()
+        with st.form("refine_results_form", clear_on_submit=True):
+            col_text, col_btn = st.columns([5, 1], vertical_alignment="bottom")
+            with col_text:
+                refine_query = st.text_input(
+                    "Refine",
+                    label_visibility="collapsed",
+                    placeholder='e.g. "Give me the cheapest flight" or "Show top 3 fastest"',
+                )
+            with col_btn:
+                submitted = st.form_submit_button("Apply", use_container_width=True)
+    if submitted:
+        text = (refine_query or "").strip()
         email = st.session_state.email_address.strip()
         if not text:
             st.session_state.form_error = "Type a refinement, such as: give me the cheapest flight."
@@ -318,7 +315,6 @@ def render_refine_prompt() -> None:
         st.session_state.form_error = ""
         with st.spinner("Refining…"):
             run_search(text, email, is_refinement=True)
-        st.session_state.clear_refine_input = True
         st.rerun()
 
 
