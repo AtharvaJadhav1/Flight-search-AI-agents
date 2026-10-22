@@ -6,7 +6,7 @@ import sys
 from dotenv import load_dotenv
 
 from agents import configure_unicode_output, extract_travel_details, is_demo_mode
-from memory import ConversationMemory
+from memory import ConversationMemory, is_follow_up_message
 from workflow import flight_agent_app, initial_state, run_config
 
 configure_unicode_output()
@@ -58,13 +58,7 @@ def request_is_complete(user_request: str, memory: ConversationMemory) -> bool:
     destination = details.get("destination") or memory.destination
     budget = details.get("budget") or memory.budget
 
-    lower = user_request.lower()
-    follow_up = any(
-        phrase in lower
-        for phrase in ("cheapest one", "only the cheapest", "same route", "previous search")
-    )
-
-    if follow_up and memory.source and memory.destination and memory.budget:
+    if is_follow_up_message(user_request, details) and memory.has_search_context():
         return True
 
     if not source or not destination:
@@ -90,6 +84,8 @@ def memory_snapshot(memory: ConversationMemory) -> dict:
         "top_results": memory.top_results,
         "last_request": memory.last_user_request,
         "previous_selected_flights": memory.previous_selected_flights,
+        "sort_by": memory.sort_by,
+        "max_stops": memory.max_stops,
     }
 
 

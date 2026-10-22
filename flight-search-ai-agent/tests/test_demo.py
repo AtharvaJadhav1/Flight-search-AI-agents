@@ -10,7 +10,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from agents import extract_travel_details, is_demo_mode
-from memory import ConversationMemory, apply_memory_to_state
+from memory import ConversationMemory, apply_memory_to_state, is_follow_up_message
 from workflow import flight_agent_app, flight_agent_app_search, initial_state, run_config
 from agents import build_email_draft, generate_email, human_approval, parse_with_rules
 from tools import is_valid_email, parse_duration_minutes
@@ -30,6 +30,110 @@ def test_normal_request() -> None:
     assert result["status"] == "completed"
     assert len(result["selected_flights"]) == 3
     assert result["selected_flights"][0]["price"] == 24500
+
+
+def test_cheapest_three_follow_up() -> None:
+    memory = ConversationMemory()
+    memory.source, memory.destination, memory.budget = "Pune", "Singapore", 30000
+    state = {
+        "user_request": "Show me only the cheapest 3.",
+        "status": "missing_info",
+        "top_results": 3,
+    }
+    merged = apply_memory_to_state(state, memory)
+    assert merged["status"] == "parsed"
+    assert merged["source"] == "Pune"
+    assert merged["budget"] == 30000
+    assert merged["top_results"] == 3
+
+
+def test_fastest_follow_up() -> None:
+    memory = ConversationMemory()
+    memory.source, memory.destination, memory.budget = "Pune", "Singapore", 30000
+    state = {"user_request": "Now show me the fastest one.", "status": "missing_info", "top_results": 3}
+    merged = apply_memory_to_state(state, memory)
+    assert merged["sort_by"] == "duration"
+    assert merged["top_results"] == 1
+
+
+def test_nonstop_follow_up() -> None:
+    memory = ConversationMemory()
+    memory.source, memory.destination, memory.budget = "Pune", "Singapore", 30000
+    state = {"user_request": "Only show nonstop flights.", "status": "missing_info", "top_results": 3}
+    merged = apply_memory_to_state(state, memory)
+    assert merged["max_stops"] == 0
+
+
+def test_new_search_replaces_context() -> None:
+    memory = ConversationMemory()
+    memory.source, memory.destination, memory.budget = "Pune", "Singapore", 30000
+    state = {
+        "user_request": "Now find flights from Delhi to Goa under ₹15,000.",
+        "source": "Delhi",
+        "destination": "Goa",
+        "budget": 15000,
+        "status": "parsed",
+        "top_results": 3,
+    }
+    merged = apply_memory_to_state(state, memory)
+    assert merged["source"] == "Delhi"
+    assert merged["destination"] == "Goa"
+    assert merged["budget"] == 15000
+
+
+def test_no_memory_helpful_error() -> None:
+    memory = ConversationMemory()
+    state = {"user_request": "Show me the cheapest one.", "status": "missing_info", "top_results": 3}
+    merged = apply_memory_to_state(state, memory)
+    assert merged["status"] == "missing_info"
+    assert "previous flight search" in merged["memory_note"].lower()
+
+
+def test_multi_turn_workflow() -> None:
+    os.environ.pop("OPENAI_API_KEY", None)
+    mem = ConversationMemory()
+    req1 = "Find flights from Pune to Singapore under ₹30,000."
+    s1 = flight_agent_app_search.invoke(
+        initial_state(req1, "a@b.co", ui_mode="streamlit", memory_snapshot={}),
+        run_config("test-mt-1"),
+    )
+    mem.update_from_state(s1)
+    assert s1["status"] == "analyzed" and len(s1["selected_flights"]) == 3
+
+    snap = {
+        "source": mem.source,
+        "destination": mem.destination,
+        "budget": mem.budget,
+        "top_results": mem.top_results,
+        "last_request": req1,
+        "previous_selected_flights": s1["selected_flights"],
+        "sort_by": mem.sort_by,
+        "max_stops": mem.max_stops,
+    }
+    s2 = flight_agent_app_search.invoke(
+        initial_state("Show me only the cheapest 3.", "a@b.co", ui_mode="streamlit", memory_snapshot=snap),
+        run_config("test-mt-2"),
+    )
+    assert s2["source"] == "Pune" and s2["budget"] == 30000
+    assert len(s2["selected_flights"]) == 3
+
+    snap2 = dict(snap)
+    mem.update_from_state(s2)
+    snap2.update(
+        {
+            "source": mem.source,
+            "destination": mem.destination,
+            "budget": mem.budget,
+            "sort_by": mem.sort_by,
+            "max_stops": mem.max_stops,
+        }
+    )
+    s3 = flight_agent_app_search.invoke(
+        initial_state("Now show me the fastest one.", "a@b.co", ui_mode="streamlit", memory_snapshot=snap2),
+        run_config("test-mt-3"),
+    )
+    assert s3["sort_by"] == "duration"
+    assert len(s3["selected_flights"]) == 1
 
 
 def test_memory_follow_up() -> None:
@@ -198,6 +302,12 @@ def run_all() -> None:
     test_parser_budget_formats()
     test_parser_trims_filler_words()
     test_parser_preferences()
+    test_cheapest_three_follow_up()
+    test_fastest_follow_up()
+    test_nonstop_follow_up()
+    test_new_search_replaces_context()
+    test_no_memory_helpful_error()
+    test_multi_turn_workflow()
     test_memory_follow_up()
     test_garbage_does_not_replay_memory()
     test_partial_request_uses_memory()

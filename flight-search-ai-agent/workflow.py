@@ -51,6 +51,7 @@ class AgentState(TypedDict, total=False):
     email_delivery: str
     email_subject_override: str
     email_body_override: str
+    conversation_intent: str
 
 
 def after_parse(state: AgentState) -> str:
@@ -190,6 +191,7 @@ def initial_state(
         "prefs": prefs or {},
         "trace": [],
         "email_delivery": "",
+        "conversation_intent": "",
     }
 
 

@@ -14,12 +14,13 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from agents import build_email_draft, generate_email, human_approval, is_demo_mode
-from memory import memory_for_streamlit
+from memory import assistant_summary, is_send_results_intent, memory_for_streamlit
 from tools import format_inr, is_valid_email
 from ui_theme import (
     inject_streamlit_css,
     notice,
     render_all_flights_table,
+    render_conversation,
     render_empty_state,
     render_flight_cards,
     render_header,
@@ -67,6 +68,7 @@ def init_session() -> None:
         "pref_sort": "Cheapest",
         "draft_subject": "",
         "draft_body": "",
+        "follow_up_text": "",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -96,16 +98,48 @@ def memory_snapshot_from_session() -> dict:
         "top_results": mem.top_results,
         "last_request": mem.last_user_request,
         "previous_selected_flights": mem.previous_selected_flights,
+        "sort_by": mem.sort_by,
+        "max_stops": mem.max_stops,
     }
 
 
-def run_search(user_request: str, email_address: str) -> None:
+def run_search(user_request: str, email_address: str, *, chat_user_line: str | None = None) -> None:
     st.session_state.last_error = ""
     st.session_state.rejected = False
     st.session_state.email_done = False
     st.session_state.awaiting_approval = False
     st.session_state.run_counter += 1
 
+    mem = memory_for_streamlit()
+    display_line = (chat_user_line or user_request).strip()
+    if display_line:
+        mem.append_turn("user", display_line)
+
+    if is_send_results_intent(user_request):
+        prior = st.session_state.workflow_result
+        if prior and prior.get("selected_flights"):
+            st.session_state.awaiting_approval = True
+            draft = build_email_draft(prior)
+            st.session_state.draft_subject = draft["subject"]
+            st.session_state.draft_body = draft["body"]
+            mem.append_turn(
+                "assistant",
+                "Here are the current picks. Approve below to generate and send the email.",
+            )
+            return
+        if not mem.has_search_context():
+            mem.append_turn(
+                "assistant",
+                "I don't have a previous flight search to use. "
+                "Please start by telling me your route and budget.",
+            )
+            st.session_state.workflow_result = {
+                "status": "missing_info",
+                "memory_note": mem.conversation_history[-1]["content"],
+            }
+            return
+
+    sort_pref = "duration" if st.session_state.pref_sort == "Fastest" else "price"
     state = initial_state(
         user_request,
         email_address,
@@ -113,8 +147,8 @@ def run_search(user_request: str, email_address: str) -> None:
         human_approved=None,
         memory_snapshot=memory_snapshot_from_session(),
         prefs={
-            "max_stops": 0 if st.session_state.pref_nonstop else None,
-            "sort_by": "duration" if st.session_state.pref_sort == "Fastest" else "price",
+            "max_stops": 0 if st.session_state.pref_nonstop else mem.max_stops,
+            "sort_by": sort_pref,
         },
     )
     # One LangGraph thread per browser session and run, so users never share checkpoints.
@@ -125,10 +159,12 @@ def run_search(user_request: str, email_address: str) -> None:
     except Exception as error:  # surface any tool/LLM failure in the UI
         st.session_state.last_error = str(error)
         st.session_state.workflow_result = {"status": "error"}
+        mem.append_turn("assistant", "Something went wrong while running the agents.")
         return
 
     st.session_state.workflow_result = result
-    memory_for_streamlit().update_from_state(result)
+    mem.update_from_state(result)
+    mem.append_turn("assistant", assistant_summary(result))
 
     if result.get("status") == "analyzed" and result.get("selected_flights"):
         st.session_state.awaiting_approval = True
@@ -195,8 +231,8 @@ def render_sidebar() -> None:
         section("Session memory")
         mem = memory_for_streamlit()
         render_memory_panel(mem.to_display_dict())
-        st.caption("Follow-ups like “show only the cheapest one” reuse this context.")
-        st.button("Clear memory & history", on_click=clear_memory, use_container_width=True)
+        st.caption("Follow-ups reuse route, budget, and filters from this session.")
+        st.button("Clear conversation", on_click=clear_memory, use_container_width=True)
 
         if st.session_state.history:
             section("Recent searches")
@@ -338,12 +374,46 @@ def render_results(result: dict) -> None:
         )
 
 
+def render_follow_up_bar() -> None:
+    mem = memory_for_streamlit()
+    with st.container(border=True):
+        st.caption("Ask a follow-up (uses session memory)")
+        col_text, col_send = st.columns([5, 1], vertical_alignment="bottom")
+        with col_text:
+            st.text_input(
+                "Follow-up",
+                key="follow_up_text",
+                label_visibility="collapsed",
+                placeholder='e.g. "Show me only the cheapest 3" or "Only nonstop flights"',
+            )
+        with col_send:
+            send = st.button("Send", type="primary", use_container_width=True)
+    if send:
+        text = st.session_state.follow_up_text.strip()
+        email = st.session_state.email_address.strip()
+        if not text:
+            st.session_state.form_error = "Type a follow-up message."
+            st.rerun()
+        if not is_valid_email(email):
+            st.session_state.form_error = "Enter your email in the search card first."
+            st.rerun()
+        st.session_state.form_error = ""
+        with st.spinner("The agents are working…"):
+            run_search(text, email, chat_user_line=text)
+        st.session_state.follow_up_text = ""
+        st.rerun()
+
+
 def main() -> None:
     init_session()
     inject_streamlit_css(bool(st.session_state.dark_mode))
     render_sidebar()
     render_header(is_demo_mode())
     render_search_card()
+
+    section("Conversation")
+    render_conversation(memory_for_streamlit().conversation_history)
+    render_follow_up_bar()
 
     result = st.session_state.workflow_result
     section("Progress")

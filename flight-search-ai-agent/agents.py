@@ -349,11 +349,16 @@ def apply_memory(state: Dict[str, Any]) -> Dict[str, Any]:
 
     merged = apply_memory_to_state(state, memory)
     note = merged.get("memory_note") or ""
-    merged["max_stops"] = state.get("max_stops")
-    merged["sort_by"] = state.get("sort_by") or "price"
-    merged["trace"] = add_trace(
-        state, "Session Memory", note or "No earlier context needed for this request."
-    )
+    if merged.get("status") == "parsed":
+        trace_detail = note or "No earlier context needed for this request."
+        if "Retrieved context" in trace_detail:
+            trace_detail = (
+                "Retrieved previous conversation context. "
+                + trace_detail.split(". ", 1)[-1]
+            )
+    else:
+        trace_detail = note or "Could not merge session memory."
+    merged["trace"] = add_trace(state, "Session Memory", trace_detail)
 
     if merged.get("status") == "parsed":
         if is_terminal_ui(state):

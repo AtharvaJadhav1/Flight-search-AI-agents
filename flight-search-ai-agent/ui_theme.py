@@ -81,6 +81,17 @@ header[data-testid="stHeader"] { background: transparent !important; }
 .pill.demo { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
 .pill.live { background: var(--good-soft); color: var(--good); border-color: transparent; }
 
+/* Conversation */
+.chat-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: .85rem 1rem; margin: .75rem 0 1rem; max-height: 280px; overflow-y: auto; }
+.chat-row { display: flex; gap: .5rem; margin-bottom: .65rem; align-items: flex-start; }
+.chat-row.user { flex-direction: row-reverse; }
+.chat-avatar { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: .75rem; flex-shrink: 0;
+  background: var(--surface-2); color: var(--muted); font-weight: 700; }
+.chat-row.user .chat-avatar { background: var(--accent-soft); color: var(--accent-text); }
+.chat-bubble { max-width: 88%; padding: .55rem .75rem; border-radius: 12px; font-size: .88rem; line-height: 1.45;
+  background: var(--surface-2); color: var(--text); white-space: pre-wrap; }
+.chat-row.user .chat-bubble { background: var(--accent); color: #fff; }
+
 /* Cards */
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 1.1rem 1.2rem; box-shadow: var(--shadow); }
 .section-label { font-size: .72rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 1.2rem 0 .5rem; }
@@ -386,16 +397,41 @@ def render_memory_panel(memory: Dict[str, Any]) -> None:
         if memory.get("source") and memory.get("destination")
         else "—"
     )
+    last_req = memory.get("last_request") or "—"
+    if len(last_req) > 42:
+        last_req = last_req[:39] + "…"
     rows = [
         ("Route", route),
         ("Budget", format_inr(budget) if budget else "—"),
-        ("Top results", str(memory.get("top_results") or 3)),
-        ("Last results", "Saved" if memory.get("has_previous_results") else "None"),
+        ("Filter", memory.get("filter") or "—"),
+        ("Sort", memory.get("sort_by") or "—"),
+        ("Results", str(memory.get("results_count") or 0) + " flights"),
+        ("Turns", str(memory.get("conversation_turns") or 0)),
+        ("Last request", last_req),
     ]
     html = "".join(
         f'<div class="mem-row"><span>{escape(k)}</span><span>{escape(v)}</span></div>' for k, v in rows
     )
     st.markdown(html, unsafe_allow_html=True)
+
+
+def render_conversation(messages: List[Dict[str, str]]) -> None:
+    if not messages:
+        st.markdown(
+            '<div class="chat-panel"><p style="color:var(--muted);margin:0;font-size:.88rem;">'
+            "Your conversation will appear here after the first search.</p></div>",
+            unsafe_allow_html=True,
+        )
+        return
+    rows = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        label = "You" if role == "user" else "Agent"
+        rows.append(
+            f'<div class="chat-row {role}"><div class="chat-avatar">{label[0]}</div>'
+            f'<div class="chat-bubble">{escape(msg.get("content", ""))}</div></div>'
+        )
+    st.markdown(f'<div class="chat-panel">{"".join(rows)}</div>', unsafe_allow_html=True)
 
 
 def render_empty_state() -> None:
