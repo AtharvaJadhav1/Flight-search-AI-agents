@@ -14,13 +14,12 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from agents import build_email_draft, generate_email, human_approval, is_demo_mode
-from memory import assistant_summary, is_send_results_intent, memory_for_streamlit
+from memory import SHOW_ALL_RESULTS, is_send_results_intent, memory_for_streamlit
 from tools import format_inr, is_valid_email
 from ui_theme import (
     inject_streamlit_css,
     notice,
     render_all_flights_table,
-    render_conversation,
     render_empty_state,
     render_flight_cards,
     render_header,
@@ -43,9 +42,9 @@ st.set_page_config(
 )
 
 EXAMPLES = [
-    "Cheapest flight from Pune to Singapore under ₹30,000, top 3",
-    "Nonstop Mumbai to Dubai under ₹40,000",
-    "Fastest Delhi to Goa under 15k, top 5",
+    "Find flights from Pune to Singapore under ₹30,000",
+    "Find flights from Mumbai to Dubai under ₹40,000",
+    "Find flights from Delhi to Goa under ₹15,000",
 ]
 MAX_HISTORY = 6
 
@@ -68,7 +67,7 @@ def init_session() -> None:
         "pref_sort": "Cheapest",
         "draft_subject": "",
         "draft_body": "",
-        "follow_up_text": "",
+        "refine_text": "",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -103,7 +102,17 @@ def memory_snapshot_from_session() -> dict:
     }
 
 
-def run_search(user_request: str, email_address: str, *, chat_user_line: str | None = None) -> None:
+def should_request_approval(result: dict) -> bool:
+    """Email approval only after the user refines to specific picks (not the full list)."""
+    if result.get("status") != "analyzed":
+        return False
+    if not result.get("selected_flights"):
+        return False
+    top = result.get("top_results", SHOW_ALL_RESULTS)
+    return top is not None and top > SHOW_ALL_RESULTS
+
+
+def run_search(user_request: str, email_address: str, *, is_refinement: bool = False) -> None:
     st.session_state.last_error = ""
     st.session_state.rejected = False
     st.session_state.email_done = False
@@ -111,9 +120,8 @@ def run_search(user_request: str, email_address: str, *, chat_user_line: str | N
     st.session_state.run_counter += 1
 
     mem = memory_for_streamlit()
-    display_line = (chat_user_line or user_request).strip()
-    if display_line:
-        mem.append_turn("user", display_line)
+    if is_refinement:
+        mem.refinement_count += 1
 
     if is_send_results_intent(user_request):
         prior = st.session_state.workflow_result
@@ -122,20 +130,14 @@ def run_search(user_request: str, email_address: str, *, chat_user_line: str | N
             draft = build_email_draft(prior)
             st.session_state.draft_subject = draft["subject"]
             st.session_state.draft_body = draft["body"]
-            mem.append_turn(
-                "assistant",
-                "Here are the current picks. Approve below to generate and send the email.",
-            )
             return
         if not mem.has_search_context():
-            mem.append_turn(
-                "assistant",
-                "I don't have a previous flight search to use. "
-                "Please start by telling me your route and budget.",
-            )
             st.session_state.workflow_result = {
                 "status": "missing_info",
-                "memory_note": mem.conversation_history[-1]["content"],
+                "memory_note": (
+                    "No previous flight search in this session. "
+                    "Start with a route and budget first."
+                ),
             }
             return
 
@@ -151,33 +153,33 @@ def run_search(user_request: str, email_address: str, *, chat_user_line: str | N
             "sort_by": sort_pref,
         },
     )
-    # One LangGraph thread per browser session and run, so users never share checkpoints.
     config = run_config(f"{st.session_state.thread_id}-{st.session_state.run_counter}")
 
     try:
         result = flight_agent_app_search.invoke(state, config)
-    except Exception as error:  # surface any tool/LLM failure in the UI
+    except Exception as error:
         st.session_state.last_error = str(error)
         st.session_state.workflow_result = {"status": "error"}
-        mem.append_turn("assistant", "Something went wrong while running the agents.")
         return
 
     st.session_state.workflow_result = result
     mem.update_from_state(result)
-    mem.append_turn("assistant", assistant_summary(result))
 
-    if result.get("status") == "analyzed" and result.get("selected_flights"):
+    if should_request_approval(result):
         st.session_state.awaiting_approval = True
         draft = build_email_draft(result)
         st.session_state.draft_subject = draft["subject"]
         st.session_state.draft_body = draft["body"]
-        best = result["selected_flights"][0]
+
+    if not is_refinement and result.get("status") == "analyzed":
+        best = (result.get("selected_flights") or [{}])[0]
+        price = best.get("price")
         history = st.session_state.history
         history.insert(
             0,
             {
                 "request": user_request,
-                "label": f'{result["source"]} → {result["destination"]} · {format_inr(best["price"])}',
+                "label": f'{result["source"]} → {result["destination"]} · {format_inr(price) if price else "—"}',
                 "time": datetime.now().strftime("%H:%M"),
             },
         )
@@ -231,8 +233,8 @@ def render_sidebar() -> None:
         section("Session memory")
         mem = memory_for_streamlit()
         render_memory_panel(mem.to_display_dict())
-        st.caption("Follow-ups reuse route, budget, and filters from this session.")
-        st.button("Clear conversation", on_click=clear_memory, use_container_width=True)
+        st.caption("Refine prompts reuse route, budget, and filters from the last search.")
+        st.button("Clear session", on_click=clear_memory, use_container_width=True)
 
         if st.session_state.history:
             section("Recent searches")
@@ -249,11 +251,12 @@ def render_sidebar() -> None:
 
 def render_search_card() -> None:
     with st.container(border=True):
+        st.markdown("**1. Search flights**")
         st.text_area(
             "What are you looking for?",
             key="request_text",
             height=92,
-            placeholder="e.g. Find the cheapest flight from Pune to Singapore under ₹30,000 and email me the top 3.",
+            placeholder="e.g. Find flights from Pune to Singapore under ₹30,000",
         )
         col_email, col_btn = st.columns([3, 1], vertical_alignment="bottom")
         with col_email:
@@ -275,11 +278,46 @@ def render_search_card() -> None:
             st.session_state.form_error = "Enter a valid email address (e.g. you@example.com)."
         else:
             st.session_state.form_error = ""
-            with st.spinner("The agents are working…"):
-                run_search(request, email)
+            with st.spinner("Searching…"):
+                run_search(request, email, is_refinement=False)
             st.rerun()
     if st.session_state.form_error:
         notice("warn", st.session_state.form_error)
+
+
+def render_refine_prompt() -> None:
+    mem = memory_for_streamlit()
+    if not mem.has_search_context():
+        return
+    with st.container(border=True):
+        st.markdown("**2. Refine results** (uses session memory)")
+        st.caption(
+            f"Context: **{mem.source} → {mem.destination}** · {format_inr(mem.budget or 0)}"
+        )
+        col_text, col_btn = st.columns([5, 1], vertical_alignment="bottom")
+        with col_text:
+            st.text_input(
+                "Refine",
+                key="refine_text",
+                label_visibility="collapsed",
+                placeholder='e.g. "Give me the cheapest flight" or "Show top 3 fastest"',
+            )
+        with col_btn:
+            refine = st.button("Apply", type="secondary", use_container_width=True)
+    if refine:
+        text = st.session_state.refine_text.strip()
+        email = st.session_state.email_address.strip()
+        if not text:
+            st.session_state.form_error = "Type a refinement, such as: give me the cheapest flight."
+            st.rerun()
+        if not is_valid_email(email):
+            st.session_state.form_error = "Enter your email in step 1 first."
+            st.rerun()
+        st.session_state.form_error = ""
+        with st.spinner("Refining…"):
+            run_search(text, email, is_refinement=True)
+        st.session_state.refine_text = ""
+        st.rerun()
 
 
 def render_approval(result: dict) -> None:
@@ -326,25 +364,47 @@ def render_results(result: dict) -> None:
         render_kpis(result)
 
     selected = result.get("selected_flights") or []
-    if selected:
-        tabs = st.tabs(["Top picks", "All flights", "Price chart", "Agent activity"])
-        with tabs[0]:
-            render_flight_cards(selected, result.get("budget") or 0)
-            st.download_button(
-                "Download picks (CSV)",
-                flights_csv(selected),
-                file_name="flight_picks.csv",
-                mime="text/csv",
+    show_all = result.get("top_results", SHOW_ALL_RESULTS) == SHOW_ALL_RESULTS
+
+    if selected or result.get("all_flights"):
+        if show_all:
+            notice(
+                "info",
+                f"<b>{len(selected)} flights</b> within your budget. "
+                "Use <b>Refine results</b> above to narrow down (e.g. cheapest only).",
             )
-        with tabs[1]:
-            render_all_flights_table(result)
-        with tabs[2]:
-            render_price_chart(result)
-        with tabs[3]:
-            render_timeline(result.get("trace") or [])
-            with st.expander("Execution plan"):
-                for index, step in enumerate(result.get("plan") or [], start=1):
-                    st.markdown(f"{index}. {step}")
+            tabs = st.tabs(["All flights in budget", "Price chart", "Agent activity"])
+            with tabs[0]:
+                render_all_flights_table(result)
+                st.download_button(
+                    "Download all (CSV)",
+                    flights_csv(result.get("filtered_flights") or selected),
+                    file_name="flights_in_budget.csv",
+                    mime="text/csv",
+                )
+            with tabs[1]:
+                render_price_chart(result)
+            with tabs[2]:
+                render_timeline(result.get("trace") or [])
+        else:
+            tabs = st.tabs(["Top picks", "All flights", "Price chart", "Agent activity"])
+            with tabs[0]:
+                render_flight_cards(selected, result.get("budget") or 0)
+                st.download_button(
+                    "Download picks (CSV)",
+                    flights_csv(selected),
+                    file_name="flight_picks.csv",
+                    mime="text/csv",
+                )
+            with tabs[1]:
+                render_all_flights_table(result)
+            with tabs[2]:
+                render_price_chart(result)
+            with tabs[3]:
+                render_timeline(result.get("trace") or [])
+                with st.expander("Execution plan"):
+                    for index, step in enumerate(result.get("plan") or [], start=1):
+                        st.markdown(f"{index}. {step}")
     elif result.get("trace"):
         with st.expander("Agent activity"):
             render_timeline(result["trace"])
@@ -374,36 +434,6 @@ def render_results(result: dict) -> None:
         )
 
 
-def render_follow_up_bar() -> None:
-    mem = memory_for_streamlit()
-    with st.container(border=True):
-        st.caption("Ask a follow-up (uses session memory)")
-        col_text, col_send = st.columns([5, 1], vertical_alignment="bottom")
-        with col_text:
-            st.text_input(
-                "Follow-up",
-                key="follow_up_text",
-                label_visibility="collapsed",
-                placeholder='e.g. "Show me only the cheapest 3" or "Only nonstop flights"',
-            )
-        with col_send:
-            send = st.button("Send", type="primary", use_container_width=True)
-    if send:
-        text = st.session_state.follow_up_text.strip()
-        email = st.session_state.email_address.strip()
-        if not text:
-            st.session_state.form_error = "Type a follow-up message."
-            st.rerun()
-        if not is_valid_email(email):
-            st.session_state.form_error = "Enter your email in the search card first."
-            st.rerun()
-        st.session_state.form_error = ""
-        with st.spinner("The agents are working…"):
-            run_search(text, email, chat_user_line=text)
-        st.session_state.follow_up_text = ""
-        st.rerun()
-
-
 def main() -> None:
     init_session()
     inject_streamlit_css(bool(st.session_state.dark_mode))
@@ -411,11 +441,10 @@ def main() -> None:
     render_header(is_demo_mode())
     render_search_card()
 
-    section("Conversation")
-    render_conversation(memory_for_streamlit().conversation_history)
-    render_follow_up_bar()
-
     result = st.session_state.workflow_result
+    if result and result.get("status") not in {None, "missing_info", "error"}:
+        render_refine_prompt()
+
     section("Progress")
     render_stepper((result or {}).get("status", ""), st.session_state.awaiting_approval)
 

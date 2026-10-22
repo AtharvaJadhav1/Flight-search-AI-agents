@@ -175,7 +175,7 @@ def initial_state(
         "user_request": user_request,
         "email_address": email_address,
         "currency": "INR",
-        "top_results": 3,
+        "top_results": 0,
         "plan": [],
         "all_flights": [],
         "filtered_flights": [],

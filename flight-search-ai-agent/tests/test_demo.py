@@ -81,6 +81,25 @@ def test_new_search_replaces_context() -> None:
     assert merged["budget"] == 15000
 
 
+def test_give_me_cheapest_follow_up() -> None:
+    memory = ConversationMemory()
+    memory.source, memory.destination, memory.budget = "Pune", "Singapore", 30000
+    state = {"user_request": "Give me the cheapest flight", "status": "missing_info", "top_results": 0}
+    merged = apply_memory_to_state(state, memory)
+    assert merged["status"] == "parsed"
+    assert merged["top_results"] == 1
+    assert merged["sort_by"] == "price"
+
+
+def test_initial_search_shows_all_in_budget() -> None:
+    state = flight_agent_app_search.invoke(
+        initial_state("Find flights from Pune to Singapore under ₹30,000.", "a@b.co", ui_mode="streamlit"),
+        run_config("test-all"),
+    )
+    assert state["top_results"] == 0
+    assert len(state["selected_flights"]) == 6
+
+
 def test_no_memory_helpful_error() -> None:
     memory = ConversationMemory()
     state = {"user_request": "Show me the cheapest one.", "status": "missing_info", "top_results": 3}
@@ -98,7 +117,7 @@ def test_multi_turn_workflow() -> None:
         run_config("test-mt-1"),
     )
     mem.update_from_state(s1)
-    assert s1["status"] == "analyzed" and len(s1["selected_flights"]) == 3
+    assert s1["status"] == "analyzed" and len(s1["selected_flights"]) == 6
 
     snap = {
         "source": mem.source,
@@ -111,7 +130,7 @@ def test_multi_turn_workflow() -> None:
         "max_stops": mem.max_stops,
     }
     s2 = flight_agent_app_search.invoke(
-        initial_state("Show me only the cheapest 3.", "a@b.co", ui_mode="streamlit", memory_snapshot=snap),
+        initial_state("Give me the cheapest 3.", "a@b.co", ui_mode="streamlit", memory_snapshot=snap),
         run_config("test-mt-2"),
     )
     assert s2["source"] == "Pune" and s2["budget"] == 30000
@@ -302,6 +321,8 @@ def run_all() -> None:
     test_parser_budget_formats()
     test_parser_trims_filler_words()
     test_parser_preferences()
+    test_initial_search_shows_all_in_budget()
+    test_give_me_cheapest_follow_up()
     test_cheapest_three_follow_up()
     test_fastest_follow_up()
     test_nonstop_follow_up()

@@ -160,7 +160,9 @@ def parse_with_rules(user_request: str) -> Dict[str, Any]:
             budget = _parse_amount(budget_match.group(1), budget_match.group(2) or "")
             break
 
-    top_results = 3
+    from memory import SHOW_ALL_RESULTS
+
+    top_results = SHOW_ALL_RESULTS
     top_match = re.search(r"top\s+(\d+)", lower)
     if top_match:
         top_results = max(1, int(top_match.group(1)))
@@ -200,7 +202,8 @@ def parse_with_llm(user_request: str) -> Optional[Dict[str, Any]]:
             "max_stops is 0 for nonstop/direct requests, otherwise null. "
             "sort_by is \"duration\" if the user wants the fastest flights, otherwise null. "
             "currency should be INR unless another currency is clearly mentioned. "
-            "top_results should default to 3 if not mentioned.\n\n"
+            "top_results should be 0 if the user did not ask for a specific number of results "
+            "(0 means list all flights within budget); otherwise use the requested count.\n\n"
             f"User request: {user_request}"
         )
         response = client.chat.completions.create(
@@ -223,17 +226,21 @@ def parse_with_llm(user_request: str) -> Optional[Dict[str, Any]]:
         budget = data.get("budget")
         if isinstance(budget, str):
             budget = int(re.sub(r"[^\d]", "", budget) or "0") or None
-        top_results = data.get("top_results", 3)
+        from memory import SHOW_ALL_RESULTS
+
+        top_results = data.get("top_results", SHOW_ALL_RESULTS)
         try:
             top_results = int(top_results)
         except (TypeError, ValueError):
-            top_results = 3
+            top_results = SHOW_ALL_RESULTS
+        if top_results < 0:
+            top_results = SHOW_ALL_RESULTS
         return {
             "source": _clean_city(str(data.get("source") or "")) or None,
             "destination": _clean_city(str(data.get("destination") or "")) or None,
             "budget": budget,
             "currency": data.get("currency") or "INR",
-            "top_results": max(1, top_results),
+            "top_results": top_results if top_results == SHOW_ALL_RESULTS else max(1, top_results),
             "max_stops": data.get("max_stops") if isinstance(data.get("max_stops"), int) else None,
             "sort_by": "duration" if data.get("sort_by") == "duration" else None,
         }
@@ -265,7 +272,11 @@ def parse_request(state: Dict[str, Any]) -> Dict[str, Any]:
     source = parsed.get("source")
     destination = parsed.get("destination")
     budget = parsed.get("budget")
-    top_results = parsed.get("top_results") or 3
+    from memory import SHOW_ALL_RESULTS
+
+    top_results = parsed.get("top_results")
+    if top_results is None:
+        top_results = SHOW_ALL_RESULTS
     currency = parsed.get("currency") or "INR"
     prefs = state.get("prefs") or {}
     max_stops = parsed.get("max_stops")
@@ -307,7 +318,10 @@ def parse_request(state: Dict[str, Any]) -> Dict[str, Any]:
         print(f"✓ Source: {source}")
         print(f"✓ Destination: {destination}")
         print(f"✓ Budget: {format_inr(budget)}")
-        print(f"✓ Requested Results: Top {top_results}")
+        if top_results == SHOW_ALL_RESULTS:
+            print("✓ Requested Results: All flights within budget")
+        else:
+            print(f"✓ Requested Results: Top {top_results}")
 
     return {
         "source": source,
@@ -331,6 +345,8 @@ def parse_request(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def apply_memory(state: Dict[str, Any]) -> Dict[str, Any]:
     """Merge short-term session memory with parsed request details."""
+    from memory import SHOW_ALL_RESULTS
+
     banner("🧠 SESSION MEMORY", state)
     tprint(state, "Checking conversational memory for this session...")
     if is_terminal_ui(state):
@@ -343,7 +359,8 @@ def apply_memory(state: Dict[str, Any]) -> Dict[str, Any]:
         memory.destination = snapshot.get("destination")
         memory.budget = snapshot.get("budget")
         memory.currency = snapshot.get("currency") or "INR"
-        memory.top_results = snapshot.get("top_results") or 3
+        snap_top = snapshot.get("top_results")
+        memory.top_results = snap_top if snap_top is not None else SHOW_ALL_RESULTS
         memory.last_user_request = snapshot.get("last_request") or ""
         memory.previous_selected_flights = list(snapshot.get("previous_selected_flights") or [])
 
@@ -369,7 +386,11 @@ def apply_memory(state: Dict[str, Any]) -> Dict[str, Any]:
             print(f"✓ Source: {merged['source']}")
             print(f"✓ Destination: {merged['destination']}")
             print(f"✓ Budget: {format_inr(merged['budget'])}")
-            print(f"✓ Results to return: Top {merged['top_results']}")
+            tr = merged["top_results"]
+            if tr == SHOW_ALL_RESULTS:
+                print("✓ Results to return: All flights within budget")
+            else:
+                print(f"✓ Results to return: Top {tr}")
     elif is_terminal_ui(state):
         print("❌ Still missing information after memory merge.")
         if note:
@@ -388,7 +409,9 @@ def create_plan(state: Dict[str, Any]) -> Dict[str, Any]:
     source = state.get("source")
     destination = state.get("destination")
     budget = state.get("budget")
-    top_results = state.get("top_results", 3)
+    from memory import SHOW_ALL_RESULTS
+
+    top_results = state.get("top_results", SHOW_ALL_RESULTS)
 
     plan = [
         f"Identify source and destination ({source} → {destination}).",
@@ -399,7 +422,9 @@ def create_plan(state: Dict[str, Any]) -> Dict[str, Any]:
         "Sort flights from fastest to slowest."
         if state.get("sort_by") == "duration"
         else "Sort flights from cheapest to most expensive.",
-        f"Select the top {top_results} cheapest flights.",
+        "List all flights within budget."
+        if top_results == 0
+        else f"Select the top {top_results} flights.",
         "Generate an email summary.",
         "Send or simulate sending the email.",
     ]
@@ -449,7 +474,9 @@ def analyze_flights(state: Dict[str, Any]) -> Dict[str, Any]:
         print()
 
     budget = state["budget"]
-    top_results = state.get("top_results", 3)
+    from memory import SHOW_ALL_RESULTS
+
+    top_results = state.get("top_results", SHOW_ALL_RESULTS)
     all_flights: List[Dict[str, Any]] = list(state.get("all_flights") or [])
 
     max_stops = state.get("max_stops")
@@ -464,11 +491,16 @@ def analyze_flights(state: Dict[str, Any]) -> Dict[str, Any]:
     else:
         key = lambda f: (f["price"], parse_duration_minutes(f["duration"]))  # noqa: E731
     sorted_flights = sorted(within_budget, key=key)
-    selected = sorted_flights[:top_results]
+    if top_results == SHOW_ALL_RESULTS or top_results <= 0:
+        selected = sorted_flights
+        pick_label = f"all {len(selected)} in budget"
+    else:
+        selected = sorted_flights[:top_results]
+        pick_label = f"top {len(selected)} by {'duration' if sort_by == 'duration' else 'price'}"
     analysis_note = (
         f"{len(all_flights)} found, {removed} above budget"
         + (f", {len(all_flights) - removed - len(within_budget)} filtered by stops" if max_stops is not None else "")
-        + f"; selected top {len(selected)} by {'duration' if sort_by == 'duration' else 'price'}."
+        + f"; showing {pick_label}."
     )
 
     if is_terminal_ui(state):
@@ -494,7 +526,7 @@ def analyze_flights(state: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     if is_terminal_ui(state):
-        print(f"Selecting Top {len(selected)} Cheapest Flights...")
+        print(f"Selecting {len(selected)} flight(s)...")
         print()
         print("✓ Removed flights above budget.")
         print("✓ Sorted flights by lowest price.")
