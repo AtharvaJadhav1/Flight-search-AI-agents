@@ -44,6 +44,13 @@ class AgentState(TypedDict, total=False):
     human_approved: Optional[bool]
     memory_note: str
     memory_snapshot: Dict[str, Any]
+    max_stops: Optional[int]
+    sort_by: str
+    prefs: Dict[str, Any]
+    trace: List[Dict[str, str]]
+    email_delivery: str
+    email_subject_override: str
+    email_body_override: str
 
 
 def after_parse(state: AgentState) -> str:
@@ -161,6 +168,7 @@ def initial_state(
     ui_mode: str = "terminal",
     human_approved: Optional[bool] = None,
     memory_snapshot: Optional[Dict[str, Any]] = None,
+    prefs: Optional[Dict[str, Any]] = None,
 ) -> AgentState:
     return {
         "user_request": user_request,
@@ -177,6 +185,11 @@ def initial_state(
         "human_approved": human_approved,
         "memory_note": "",
         "memory_snapshot": memory_snapshot or {},
+        "max_stops": None,
+        "sort_by": "price",
+        "prefs": prefs or {},
+        "trace": [],
+        "email_delivery": "",
     }
 
 

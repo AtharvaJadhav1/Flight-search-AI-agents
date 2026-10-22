@@ -105,7 +105,11 @@ def apply_memory_to_state(state: Dict[str, Any], memory: ConversationMemory) -> 
 
     follow_up = _is_refinement_request(user_request)
 
-    if follow_up or status == "missing_info":
+    # Fill gaps from memory for explicit follow-ups, or when the user gave at least
+    # part of a new request (e.g. only a new budget). A message with no travel
+    # details at all must not silently replay the previous search.
+    gave_partial = bool(source or destination or budget)
+    if follow_up or (status == "missing_info" and gave_partial):
         if not source and memory.source:
             source = memory.source
         if not destination and memory.destination:

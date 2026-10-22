@@ -24,7 +24,12 @@ The system understands the request, plans the work, searches flights, decides wh
 - Email generation (optional real SMTP)
 - Demo / Offline mode (no OpenAI key required)
 - Terminal interface (`main.py`)
-- Streamlit web interface (`app.py`)
+- Streamlit web interface (`app.py`): responsive, light/dark theme, works on phones
+- Nonstop-only filter and cheapest/fastest sorting (also understood from text: "fastest nonstop ...")
+- Flexible budgets: `30k`, `Rs. 25,000`, `1.5 lakh`
+- Agent activity timeline, all-flights table, and price chart
+- Editable email draft before approval, plus CSV / email downloads
+- Session memory panel, recent searches, and clear-memory button
 
 ## Agent Architecture
 
@@ -170,4 +175,4 @@ git add -A && git commit -m "your message" && git push origin main
 
 - Real flight API integration
 - Persistent long-term memory (if required by a later unit)
-- Richer Streamlit styling
+- Dates, passengers, and return trips

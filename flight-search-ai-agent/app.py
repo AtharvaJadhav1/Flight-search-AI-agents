@@ -4,20 +4,31 @@ Streamlit web interface for the Flight Search AI Agent.
 
 from __future__ import annotations
 
-import re
+import csv
+import io
+import uuid
+from datetime import datetime
+from html import escape
 
 import streamlit as st
 from dotenv import load_dotenv
 
-from agents import extract_travel_details, generate_email, human_approval, is_demo_mode
+from agents import build_email_draft, generate_email, human_approval, is_demo_mode
 from memory import memory_for_streamlit
+from tools import format_inr, is_valid_email
 from ui_theme import (
     inject_streamlit_css,
+    notice,
+    render_all_flights_table,
+    render_empty_state,
     render_flight_cards,
     render_header,
-    render_summary_metrics,
-    render_workflow_stepper,
-    workflow_phase,
+    render_kpis,
+    render_memory_panel,
+    render_price_chart,
+    render_stepper,
+    render_timeline,
+    section,
 )
 from workflow import flight_agent_app_search, initial_state, run_config
 
@@ -27,8 +38,15 @@ st.set_page_config(
     page_title="Flight Search AI Agent",
     page_icon="✈️",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="auto",
 )
+
+EXAMPLES = [
+    "Cheapest flight from Pune to Singapore under ₹30,000, top 3",
+    "Nonstop Mumbai to Dubai under ₹40,000",
+    "Fastest Delhi to Goa under 15k, top 5",
+]
+MAX_HISTORY = 6
 
 
 def init_session() -> None:
@@ -39,14 +57,33 @@ def init_session() -> None:
         "rejected": False,
         "email_done": False,
         "last_error": "",
+        "form_error": "",
+        "history": [],
+        "thread_id": uuid.uuid4().hex,
+        "run_counter": 0,
+        "request_text": "",
+        "email_address": "",
+        "pref_nonstop": False,
+        "pref_sort": "Cheapest",
+        "draft_subject": "",
+        "draft_body": "",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
 
-def validate_email(email: str) -> bool:
-    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email.strip()))
+def set_request(text: str) -> None:
+    st.session_state.request_text = text
+
+
+def clear_memory() -> None:
+    memory_for_streamlit().clear()
+    st.session_state.history = []
+    st.session_state.workflow_result = None
+    st.session_state.awaiting_approval = False
+    st.session_state.email_done = False
+    st.session_state.rejected = False
 
 
 def memory_snapshot_from_session() -> dict:
@@ -67,6 +104,7 @@ def run_search(user_request: str, email_address: str) -> None:
     st.session_state.rejected = False
     st.session_state.email_done = False
     st.session_state.awaiting_approval = False
+    st.session_state.run_counter += 1
 
     state = initial_state(
         user_request,
@@ -74,11 +112,17 @@ def run_search(user_request: str, email_address: str) -> None:
         ui_mode="streamlit",
         human_approved=None,
         memory_snapshot=memory_snapshot_from_session(),
+        prefs={
+            "max_stops": 0 if st.session_state.pref_nonstop else None,
+            "sort_by": "duration" if st.session_state.pref_sort == "Fastest" else "price",
+        },
     )
+    # One LangGraph thread per browser session and run, so users never share checkpoints.
+    config = run_config(f"{st.session_state.thread_id}-{st.session_state.run_counter}")
 
     try:
-        result = flight_agent_app_search.invoke(state, run_config("streamlit-search"))
-    except Exception as error:
+        result = flight_agent_app_search.invoke(state, config)
+    except Exception as error:  # surface any tool/LLM failure in the UI
         st.session_state.last_error = str(error)
         st.session_state.workflow_result = {"status": "error"}
         return
@@ -88,135 +132,230 @@ def run_search(user_request: str, email_address: str) -> None:
 
     if result.get("status") == "analyzed" and result.get("selected_flights"):
         st.session_state.awaiting_approval = True
+        draft = build_email_draft(result)
+        st.session_state.draft_subject = draft["subject"]
+        st.session_state.draft_body = draft["body"]
+        best = result["selected_flights"][0]
+        history = st.session_state.history
+        history.insert(
+            0,
+            {
+                "request": user_request,
+                "label": f'{result["source"]} → {result["destination"]} · {format_inr(best["price"])}',
+                "time": datetime.now().strftime("%H:%M"),
+            },
+        )
+        del history[MAX_HISTORY:]
 
 
 def resume_after_approval(approved: bool) -> None:
     base = dict(st.session_state.workflow_result or {})
     base["ui_mode"] = "streamlit"
     base["human_approved"] = approved
+    base["email_subject_override"] = st.session_state.draft_subject.strip()
+    base["email_body_override"] = st.session_state.draft_body.strip()
 
     try:
         base.update(human_approval(base))
-    except Exception as error:
-        st.session_state.last_error = str(error)
-        return
-
-    if not approved or base.get("status") == "rejected":
-        st.session_state.rejected = True
-        st.session_state.awaiting_approval = False
-        base["status"] = "rejected"
-        st.session_state.workflow_result = base
-        return
-
-    try:
-        base.update(generate_email(base))
+        if approved and base.get("status") == "approved":
+            base.update(generate_email(base))
     except Exception as error:
         st.session_state.last_error = str(error)
         return
 
     st.session_state.workflow_result = base
-    memory_for_streamlit().update_from_state(base)
     st.session_state.awaiting_approval = False
+    if base.get("status") == "rejected":
+        st.session_state.rejected = True
+        return
+    memory_for_streamlit().update_from_state(base)
     st.session_state.email_done = base.get("status") == "completed"
+
+
+def flights_csv(flights: list) -> str:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["Airline", "Flight", "Departure", "Arrival", "Duration", "Stops", "Price (INR)"])
+    for f in flights:
+        writer.writerow(
+            [f["airline"], f["flight_number"], f["departure"], f["arrival"], f["duration"], f["stops"], f["price"]]
+        )
+    return buffer.getvalue()
+
+
+def render_sidebar() -> None:
+    with st.sidebar:
+        st.markdown("### ✈ Flight Agent")
+        st.toggle("Dark mode", key="dark_mode")
+
+        section("Search preferences")
+        st.checkbox("Nonstop flights only", key="pref_nonstop")
+        st.radio("Sort by", ["Cheapest", "Fastest"], key="pref_sort", horizontal=True)
+
+        section("Session memory")
+        mem = memory_for_streamlit()
+        render_memory_panel(mem.to_display_dict())
+        st.caption("Follow-ups like “show only the cheapest one” reuse this context.")
+        st.button("Clear memory & history", on_click=clear_memory, use_container_width=True)
+
+        if st.session_state.history:
+            section("Recent searches")
+            for index, item in enumerate(st.session_state.history):
+                st.button(
+                    f'{item["label"]}',
+                    key=f"hist_{index}",
+                    help=f'{item["time"]} — {item["request"]}',
+                    on_click=set_request,
+                    args=(item["request"],),
+                    use_container_width=True,
+                )
+
+
+def render_search_card() -> None:
+    with st.container(border=True):
+        st.text_area(
+            "What are you looking for?",
+            key="request_text",
+            height=92,
+            placeholder="e.g. Find the cheapest flight from Pune to Singapore under ₹30,000 and email me the top 3.",
+        )
+        col_email, col_btn = st.columns([3, 1], vertical_alignment="bottom")
+        with col_email:
+            st.text_input("Send results to", key="email_address", placeholder="you@example.com")
+        with col_btn:
+            submitted = st.button("Search flights", type="primary", use_container_width=True)
+
+        st.caption("Try an example:")
+        chip_cols = st.columns(len(EXAMPLES))
+        for index, (col, example) in enumerate(zip(chip_cols, EXAMPLES)):
+            col.button(example, key=f"chip_{index}", on_click=set_request, args=(example,), use_container_width=True)
+
+    if submitted:
+        request = st.session_state.request_text.strip()
+        email = st.session_state.email_address.strip()
+        if not request:
+            st.session_state.form_error = "Enter a request, or pick one of the examples."
+        elif not is_valid_email(email):
+            st.session_state.form_error = "Enter a valid email address (e.g. you@example.com)."
+        else:
+            st.session_state.form_error = ""
+            with st.spinner("The agents are working…"):
+                run_search(request, email)
+            st.rerun()
+    if st.session_state.form_error:
+        notice("warn", st.session_state.form_error)
+
+
+def render_approval(result: dict) -> None:
+    section("Human approval")
+    notice(
+        "info",
+        "<b>Review before sending.</b> The agent drafted this email from the selected flights. "
+        "Edit it if you like, then approve to send, or reject to start over.",
+    )
+    st.text_input("Subject", key="draft_subject")
+    st.text_area("Message", key="draft_body", height=240)
+    c1, c2 = st.columns(2)
+    if c1.button("Approve & send", type="primary", use_container_width=True):
+        with st.spinner("Sending…"):
+            resume_after_approval(True)
+        st.rerun()
+    if c2.button("Reject", use_container_width=True):
+        resume_after_approval(False)
+        st.rerun()
+
+
+def render_results(result: dict) -> None:
+    status = result.get("status", "")
+    if status == "missing_info":
+        missing = result.get("memory_note") or ""
+        notice(
+            "bad",
+            "<b>I couldn't understand the request.</b> Please include a source city, a destination city "
+            "and a budget, e.g. <i>“Pune to Singapore under ₹30,000”</i>."
+            + (f"<br>{missing}" if missing and "Could not resolve" not in missing else ""),
+        )
+    elif status == "no_flights":
+        notice(
+            "warn",
+            f'<b>No flights matched.</b> Nothing from {result.get("source")} to {result.get("destination")} '
+            f'fits {format_inr(result.get("budget") or 0)}'
+            + (" with nonstop only" if result.get("max_stops") == 0 else "")
+            + ". Try a higher budget or allow connecting flights.",
+        )
+    elif status == "error":
+        notice("bad", "<b>Something went wrong</b> while running the agents. Please try again.")
+
+    if result.get("source") and status not in {"missing_info", "error"}:
+        render_kpis(result)
+
+    selected = result.get("selected_flights") or []
+    if selected:
+        tabs = st.tabs(["Top picks", "All flights", "Price chart", "Agent activity"])
+        with tabs[0]:
+            render_flight_cards(selected, result.get("budget") or 0)
+            st.download_button(
+                "Download picks (CSV)",
+                flights_csv(selected),
+                file_name="flight_picks.csv",
+                mime="text/csv",
+            )
+        with tabs[1]:
+            render_all_flights_table(result)
+        with tabs[2]:
+            render_price_chart(result)
+        with tabs[3]:
+            render_timeline(result.get("trace") or [])
+            with st.expander("Execution plan"):
+                for index, step in enumerate(result.get("plan") or [], start=1):
+                    st.markdown(f"{index}. {step}")
+    elif result.get("trace"):
+        with st.expander("Agent activity"):
+            render_timeline(result["trace"])
+
+    if st.session_state.awaiting_approval and selected:
+        render_approval(result)
+
+    if st.session_state.rejected:
+        notice("warn", "<b>Recommendation rejected.</b> No email was sent. Adjust your request and search again.")
+
+    if st.session_state.email_done and result.get("email_content"):
+        delivery = result.get("email_delivery")
+        if delivery == "sent":
+            notice("good", f'<b>Email sent</b> to {result.get("email_address")}.')
+        else:
+            notice(
+                "info",
+                "<b>Demo send.</b> No SMTP credentials are configured, so the email was simulated, not delivered.",
+            )
+        with st.expander("View sent email", expanded=True):
+            st.markdown(f'<div class="mail">{escape(result["email_content"])}</div>', unsafe_allow_html=True)
+        st.download_button(
+            "Download email (.txt)",
+            result["email_content"],
+            file_name="flight_email.txt",
+            mime="text/plain",
+        )
 
 
 def main() -> None:
     init_session()
-    dark = bool(st.session_state.dark_mode)
-    inject_streamlit_css(dark)
+    inject_streamlit_css(bool(st.session_state.dark_mode))
+    render_sidebar()
     render_header(is_demo_mode())
+    render_search_card()
 
-    left, right = st.columns([1, 1], gap="large")
+    result = st.session_state.workflow_result
+    section("Progress")
+    render_stepper((result or {}).get("status", ""), st.session_state.awaiting_approval)
 
-    with left:
-        with st.form("search_form", clear_on_submit=False):
-            user_request = st.text_area(
-                "Request",
-                height=100,
-                placeholder=(
-                    "Cheapest flight Pune to Singapore under ₹30,000, email top 3."
-                ),
-            )
-            email_address = st.text_input("Email", placeholder="you@example.com")
-            submitted = st.form_submit_button("Search", type="primary", use_container_width=True)
+    if st.session_state.last_error:
+        notice("bad", f'<b>Error:</b> {st.session_state.last_error}')
 
-        if submitted:
-            if not user_request.strip():
-                st.warning("Enter a request.")
-            elif not email_address.strip() or not validate_email(email_address):
-                st.warning("Enter a valid email.")
-            else:
-                details = extract_travel_details(user_request)
-                mem = memory_for_streamlit()
-                has_memory = mem.source and mem.destination and mem.budget
-                if not has_memory and (
-                    not details.get("source")
-                    or not details.get("destination")
-                    or not details.get("budget")
-                ):
-                    st.error("Include cities and budget (e.g. under ₹30,000).")
-                else:
-                    with st.spinner("Working…"):
-                        run_search(user_request.strip(), email_address.strip())
-                    st.rerun()
-
-    with right:
-        result = st.session_state.workflow_result
-        phase = workflow_phase(
-            result,
-            st.session_state.awaiting_approval,
-            st.session_state.email_done,
-        )
-
-        render_workflow_stepper(
-            result,
-            phase,
-            st.session_state.awaiting_approval,
-            st.session_state.email_done,
-        )
-
-        if st.session_state.last_error:
-            st.error(st.session_state.last_error)
-
-        if not result:
-            st.caption("Results appear here after you search.")
-        else:
-            status = result.get("status", "")
-            if status == "missing_info":
-                st.error("Missing cities or budget.")
-            elif status == "no_flights":
-                st.warning("No flights in budget.")
-            elif status == "error":
-                st.error("Something went wrong.")
-
-            if result.get("source") and status not in {"missing_info", "error"}:
-                render_summary_metrics(result)
-
-            if result.get("selected_flights"):
-                render_flight_cards(result["selected_flights"])
-
-            if st.session_state.awaiting_approval and result.get("selected_flights"):
-                st.markdown(
-                    '<div class="approval-box">Approve to send the email summary.</div>',
-                    unsafe_allow_html=True,
-                )
-                c1, c2 = st.columns(2)
-                with c1:
-                    if st.button("Approve", type="primary", use_container_width=True):
-                        with st.spinner("Sending…"):
-                            resume_after_approval(True)
-                        st.rerun()
-                with c2:
-                    if st.button("Reject", use_container_width=True):
-                        resume_after_approval(False)
-                        st.rerun()
-
-            if st.session_state.rejected:
-                st.error("Rejected. Change your request and search again.")
-
-            if st.session_state.email_done and result.get("email_content"):
-                st.success("Email ready (demo send)")
-                st.text_area("Email", value=result["email_content"], height=220, disabled=True)
+    if not result:
+        render_empty_state()
+    else:
+        render_results(result)
 
 
 if __name__ == "__main__":

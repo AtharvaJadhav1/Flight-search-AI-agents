@@ -7,6 +7,7 @@ from planning and reasoning.
 """
 
 import os
+import re
 import smtplib
 from email.mime.text import MIMEText
 from typing import Any, Dict, List
@@ -17,6 +18,17 @@ from data import get_mock_flights
 def format_inr(amount: int) -> str:
     """Format a number like 24500 as ₹24,500."""
     return f"₹{amount:,}"
+
+
+def parse_duration_minutes(duration: str) -> int:
+    """Convert a label like '6h 30m' to minutes (0 if it cannot be read)."""
+    hours = re.search(r"(\d+)\s*h", duration or "")
+    minutes = re.search(r"(\d+)\s*m", duration or "")
+    return (int(hours.group(1)) * 60 if hours else 0) + (int(minutes.group(1)) if minutes else 0)
+
+
+def is_valid_email(email: str) -> bool:
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", (email or "").strip()))
 
 
 def flight_search_tool(source: str, destination: str, *, quiet: bool = False) -> List[Dict[str, Any]]:

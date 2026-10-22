@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from data import KNOWN_CITIES
 from memory import ConversationMemory, apply_memory_to_state
-from tools import flight_search_tool, format_inr, send_email_tool
+from tools import flight_search_tool, format_inr, parse_duration_minutes, send_email_tool
 from ui_common import is_terminal_ui
 
 
@@ -69,6 +69,35 @@ def _clean_city(name: str) -> str:
     return name.title()
 
 
+CITY_STOP_WORDS = (
+    "under|below|within|and|with|for|on|in|by|at|next|this|tomorrow|today|"
+    "please|nonstop|non-stop|direct|cheapest|budget|upto|up|less|email|send|show|top"
+)
+
+
+def _trim_city(raw: str) -> str:
+    """Cut a captured city phrase at the first filler word ("Singapore for 2 adults" -> "Singapore")."""
+    words = re.split(rf"\s+(?=(?:{CITY_STOP_WORDS})\b)", raw.strip(), maxsplit=1, flags=re.IGNORECASE)
+    return words[0]
+
+
+def _parse_amount(raw: str, suffix: str = "") -> Optional[int]:
+    try:
+        value = float(raw.replace(",", ""))
+    except ValueError:
+        return None
+    if suffix.lower() == "k":
+        value *= 1000
+    elif suffix.lower() in {"l", "lakh", "lakhs"}:
+        value *= 100000
+    return int(value) if value > 0 else None
+
+
+def add_trace(state: Dict[str, Any], agent: str, detail: str) -> List[Dict[str, str]]:
+    """Append one entry to the agent activity log shown in the UI."""
+    return list(state.get("trace") or []) + [{"agent": agent, "detail": detail}]
+
+
 def parse_with_rules(user_request: str) -> Dict[str, Any]:
     """
     Rule-based parser used when no OpenAI key is available.
@@ -91,8 +120,8 @@ def parse_with_rules(user_request: str) -> Dict[str, Any]:
         flags=re.IGNORECASE,
     )
     if from_to:
-        source = _clean_city(from_to.group(1))
-        destination = _clean_city(from_to.group(2))
+        source = _clean_city(_trim_city(from_to.group(1)))
+        destination = _clean_city(_trim_city(from_to.group(2)))
 
     # Fallback: match known city names in order of appearance.
     if not source or not destination:
@@ -120,19 +149,16 @@ def parse_with_rules(user_request: str) -> Dict[str, Any]:
 
     budget = None
     currency = "INR"
-    budget_match = re.search(
-        r"(?:under|below|within|less than|budget of|upto|up to)\s*₹?\s*([\d,]+)",
-        lower,
-    )
-    if not budget_match:
-        budget_match = re.search(r"₹\s*([\d,]+)", text)
-    if not budget_match:
-        budget_match = re.search(r"(?:rs\.?|inr)\s*([\d,]+)", lower)
-    if budget_match:
-        try:
-            budget = int(budget_match.group(1).replace(",", ""))
-        except ValueError:
-            budget = None
+    amount = r"([\d][\d,]*(?:\.\d+)?)\s*(k|lakhs?|l)?\b"
+    for pattern in (
+        rf"(?:under|below|within|less than|budget(?: of)?|upto|up to|max(?:imum)?)\s*(?:₹|rs\.?|inr)?\s*{amount}",
+        rf"(?:₹|rs\.?|inr)\s*{amount}",
+        rf"{amount}\s*(?:rupees|inr)",
+    ):
+        budget_match = re.search(pattern, lower)
+        if budget_match:
+            budget = _parse_amount(budget_match.group(1), budget_match.group(2) or "")
+            break
 
     top_results = 3
     top_match = re.search(r"top\s+(\d+)", lower)
@@ -143,12 +169,17 @@ def parse_with_rules(user_request: str) -> Dict[str, Any]:
         if show_match:
             top_results = max(1, int(show_match.group(1)))
 
+    max_stops = 0 if re.search(r"\b(non-?stop|direct)\b", lower) else None
+    sort_by = "duration" if re.search(r"\b(fastest|shortest|quickest)\b", lower) else None
+
     return {
         "source": source,
         "destination": destination,
         "budget": budget,
         "currency": currency,
         "top_results": top_results,
+        "max_stops": max_stops,
+        "sort_by": sort_by,
     }
 
 
@@ -165,7 +196,9 @@ def parse_with_llm(user_request: str) -> Optional[Dict[str, Any]]:
         prompt = (
             "Extract flight search details from the user request. "
             "Return ONLY valid JSON with keys: source, destination, budget, "
-            "currency, top_results. budget must be an integer. "
+            "currency, top_results, max_stops, sort_by. budget must be an integer. "
+            "max_stops is 0 for nonstop/direct requests, otherwise null. "
+            "sort_by is \"duration\" if the user wants the fastest flights, otherwise null. "
             "currency should be INR unless another currency is clearly mentioned. "
             "top_results should default to 3 if not mentioned.\n\n"
             f"User request: {user_request}"
@@ -201,6 +234,8 @@ def parse_with_llm(user_request: str) -> Optional[Dict[str, Any]]:
             "budget": budget,
             "currency": data.get("currency") or "INR",
             "top_results": max(1, top_results),
+            "max_stops": data.get("max_stops") if isinstance(data.get("max_stops"), int) else None,
+            "sort_by": "duration" if data.get("sort_by") == "duration" else None,
         }
     except Exception:
         # Missing package, bad key, network error, or bad JSON → use rules.
@@ -232,6 +267,11 @@ def parse_request(state: Dict[str, Any]) -> Dict[str, Any]:
     budget = parsed.get("budget")
     top_results = parsed.get("top_results") or 3
     currency = parsed.get("currency") or "INR"
+    prefs = state.get("prefs") or {}
+    max_stops = parsed.get("max_stops")
+    if max_stops is None:
+        max_stops = prefs.get("max_stops")
+    sort_by = parsed.get("sort_by") or prefs.get("sort_by") or "price"
 
     missing = []
     if not source:
@@ -255,7 +295,12 @@ def parse_request(state: Dict[str, Any]) -> Dict[str, Any]:
             "budget": budget,
             "currency": currency,
             "top_results": top_results,
+            "max_stops": max_stops,
+            "sort_by": sort_by,
             "status": "missing_info",
+            "trace": add_trace(
+                state, "Request Parser", "Could not extract: " + ", ".join(missing) + "."
+            ),
         }
 
     if is_terminal_ui(state):
@@ -270,7 +315,17 @@ def parse_request(state: Dict[str, Any]) -> Dict[str, Any]:
         "budget": budget,
         "currency": currency,
         "top_results": top_results,
+        "max_stops": max_stops,
+        "sort_by": sort_by,
         "status": "parsed",
+        "trace": add_trace(
+            state,
+            "Request Parser",
+            f"{source} → {destination}, budget {format_inr(budget)}, top {top_results}"
+            + (", nonstop only" if max_stops == 0 else "")
+            + (", fastest first" if sort_by == "duration" else "")
+            + f" ({'rule-based' if is_demo_mode() else 'LLM'} parsing).",
+        ),
     }
 
 
@@ -294,6 +349,11 @@ def apply_memory(state: Dict[str, Any]) -> Dict[str, Any]:
 
     merged = apply_memory_to_state(state, memory)
     note = merged.get("memory_note") or ""
+    merged["max_stops"] = state.get("max_stops")
+    merged["sort_by"] = state.get("sort_by") or "price"
+    merged["trace"] = add_trace(
+        state, "Session Memory", note or "No earlier context needed for this request."
+    )
 
     if merged.get("status") == "parsed":
         if is_terminal_ui(state):
@@ -329,8 +389,11 @@ def create_plan(state: Dict[str, Any]) -> Dict[str, Any]:
         f"Identify source and destination ({source} → {destination}).",
         "Search available flights using the Flight Search Tool.",
         "Collect flight details and prices.",
-        f"Filter flights within the user's budget of {format_inr(budget)}.",
-        "Sort flights from cheapest to most expensive.",
+        f"Filter flights within the user's budget of {format_inr(budget)}"
+        + (" (nonstop only)." if state.get("max_stops") == 0 else "."),
+        "Sort flights from fastest to slowest."
+        if state.get("sort_by") == "duration"
+        else "Sort flights from cheapest to most expensive.",
         f"Select the top {top_results} cheapest flights.",
         "Generate an email summary.",
         "Send or simulate sending the email.",
@@ -342,7 +405,11 @@ def create_plan(state: Dict[str, Any]) -> Dict[str, Any]:
         for index, step in enumerate(plan, start=1):
             print(f"{index}. {step}")
 
-    return {"plan": plan, "status": "planned"}
+    return {
+        "plan": plan,
+        "status": "planned",
+        "trace": add_trace(state, "Planning Agent", f"Created a {len(plan)}-step plan."),
+    }
 
 
 def search_flights(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -357,7 +424,16 @@ def search_flights(state: Dict[str, Any]) -> Dict[str, Any]:
         print("✓ Tool executed successfully.")
         print(f"✓ Found {len(flights)} flights.")
 
-    return {"all_flights": flights, "status": "searched"}
+    return {
+        "all_flights": flights,
+        "status": "searched",
+        "trace": add_trace(
+            state,
+            "Flight Search Agent",
+            f"Flight Search Tool returned {len(flights)} flights for "
+            f"{state['source']} → {state['destination']}.",
+        ),
+    }
 
 
 def analyze_flights(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -371,10 +447,24 @@ def analyze_flights(state: Dict[str, Any]) -> Dict[str, Any]:
     top_results = state.get("top_results", 3)
     all_flights: List[Dict[str, Any]] = list(state.get("all_flights") or [])
 
+    max_stops = state.get("max_stops")
+    sort_by = state.get("sort_by") or "price"
+
     within_budget = [flight for flight in all_flights if flight["price"] <= budget]
     removed = len(all_flights) - len(within_budget)
-    sorted_flights = sorted(within_budget, key=lambda flight: flight["price"])
+    if max_stops is not None:
+        within_budget = [f for f in within_budget if f["stops"] <= max_stops]
+    if sort_by == "duration":
+        key = lambda f: (parse_duration_minutes(f["duration"]), f["price"])  # noqa: E731
+    else:
+        key = lambda f: (f["price"], parse_duration_minutes(f["duration"]))  # noqa: E731
+    sorted_flights = sorted(within_budget, key=key)
     selected = sorted_flights[:top_results]
+    analysis_note = (
+        f"{len(all_flights)} found, {removed} above budget"
+        + (f", {len(all_flights) - removed - len(within_budget)} filtered by stops" if max_stops is not None else "")
+        + f"; selected top {len(selected)} by {'duration' if sort_by == 'duration' else 'price'}."
+    )
 
     if is_terminal_ui(state):
         print(f"User Budget: {format_inr(budget)}")
@@ -395,6 +485,7 @@ def analyze_flights(state: Dict[str, Any]) -> Dict[str, Any]:
             "filtered_flights": [],
             "selected_flights": [],
             "status": "no_flights",
+            "trace": add_trace(state, "Flight Analysis Agent", analysis_note),
         }
 
     if is_terminal_ui(state):
@@ -427,6 +518,7 @@ def analyze_flights(state: Dict[str, Any]) -> Dict[str, Any]:
         "filtered_flights": sorted_flights,
         "selected_flights": selected,
         "status": "analyzed",
+        "trace": add_trace(state, "Flight Analysis Agent", analysis_note),
     }
 
 
@@ -452,9 +544,15 @@ def human_approval(state: Dict[str, Any]) -> Dict[str, Any]:
 
     if ui_mode == "streamlit":
         if approved is True:
-            return {"status": "approved"}
+            return {
+                "status": "approved",
+                "trace": add_trace(state, "Human Approval", "Approved by the user."),
+            }
         if approved is False:
-            return {"status": "rejected"}
+            return {
+                "status": "rejected",
+                "trace": add_trace(state, "Human Approval", "Rejected by the user; no email sent."),
+            }
         return {"status": "awaiting_approval"}
 
     if approved is True:
@@ -478,36 +576,47 @@ def human_approval(state: Dict[str, Any]) -> Dict[str, Any]:
     return {"status": "rejected"}
 
 
-def generate_email(state: Dict[str, Any]) -> Dict[str, Any]:
-    """AGENT 5: write the email and send/simulate it (this is the final action)."""
-    banner("📧 AGENT 5: EMAIL AGENT", state)
-
+def build_email_draft(state: Dict[str, Any]) -> Dict[str, str]:
+    """Compose the email subject and body (no sending)."""
     source = state["source"]
     destination = state["destination"]
     budget = state["budget"]
-    top_results = state.get("top_results", 3)
     selected = state.get("selected_flights") or []
-    to_address = state.get("email_address") or "user@example.com"
 
     option_lines = []
     for index, flight in enumerate(selected, start=1):
+        stops = "Nonstop" if flight["stops"] == 0 else f"{flight['stops']} stop(s)"
         option_lines.append(
             f"{index}. {flight['airline']} – {format_inr(flight['price'])} "
             f"({flight['flight_number']}, {flight['departure']} → {flight['arrival']}, "
-            f"{flight['duration']}, stops: {flight['stops']})"
+            f"{flight['duration']}, {stops})"
         )
 
     subject = f"Top {len(selected)} Cheapest Flights from {source} to {destination}"
+    if state.get("sort_by") == "duration":
+        subject = f"Top {len(selected)} Fastest Flights from {source} to {destination}"
     body = (
         f"Hello,\n\n"
         f"I searched for flights from {source} to {destination} "
         f"within your budget of {format_inr(budget)}.\n\n"
-        f"Here are the top {len(selected)} cheapest options:\n\n"
+        f"Here are the top {len(selected)} options:\n\n"
         + "\n".join(option_lines)
         + "\n\nThank you for using Flight Search AI Agent.\n\n"
         "Best regards,\n"
         "Flight Search AI Agent\n"
     )
+    return {"subject": subject, "body": body}
+
+
+def generate_email(state: Dict[str, Any]) -> Dict[str, Any]:
+    """AGENT 5: write the email and send/simulate it (this is the final action)."""
+    banner("📧 AGENT 5: EMAIL AGENT", state)
+
+    to_address = state.get("email_address") or "user@example.com"
+    draft = build_email_draft(state)
+    # The user may have edited the draft in the web UI before approving.
+    subject = state.get("email_subject_override") or draft["subject"]
+    body = state.get("email_body_override") or draft["body"]
 
     if is_terminal_ui(state):
         print(LINE)
@@ -526,5 +635,12 @@ def generate_email(state: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "email_content": f"Subject: {subject}\n\n{body}",
-        "status": "completed" if delivery else "completed",
+        "email_delivery": delivery,
+        "status": "completed",
+        "trace": add_trace(
+            state,
+            "Email Agent",
+            f"Email to {to_address} "
+            + ("sent via SMTP." if delivery == "sent" else "simulated (Demo Mode, no SMTP configured)."),
+        ),
     }
